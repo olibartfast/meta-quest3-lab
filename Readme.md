@@ -1,6 +1,6 @@
 # Meta Quest 3 AR Lab
 
-Quest 3 AR playground environment using the Meta XR SDK with C++(Native development, so no Unity, no Unreal).
+Quest 3 AR playground environment using the Meta XR SDK with C++(Native development, so currently no Unity, no Unreal).
 
 ## Quick Start
 
@@ -87,3 +87,7 @@ Builds the project and deploys it to the connected Quest 3 device.
 - **Device not detected**: Ensure udev rules are applied and you're in plugdev group
 - **Permission denied**: Logout and login after running udev setup script
 - **Build issues**: Verify all environment variables are set (restart terminal after setup)
+
+### Other Link and Resources
+- [Start develop with Unity](https://developers.meta.com/horizon/documentation/unity/unity-depthapi-overview/)
+- [Start develop with Unreal](https://developers.meta.com/horizon/documentation/unreal/unreal-create-and-configure-new-project)
