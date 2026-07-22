@@ -59,19 +59,6 @@ Configures device connection and debugging:
 4. Verify connection with `adb devices`
 5. Build and deploy applications using NDK/CMake
 
-## Create Project Structure
-
-```bash
-./scripts/create_project_structure.sh
-```
-
-This script creates the basic directory structure and template files for a new Meta Quest 3 AR application.
-
-**Main Project Components:**
-- Core application framework
-- XR passthrough manager and spatial anchor system
-- Android main entry point
-
 ## Build and Deploy
 
 ```bash
