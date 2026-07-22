@@ -25,7 +25,7 @@ This sample demonstrates the use of both still and animated styles, as well as s
 
 1. **Navigate to repository root**
    ```bash
-   cd /path/to/meta-quest3s-lab
+   cd /path/to/meta-quest3-lab
    ```
 
 2. **Install development dependencies**
