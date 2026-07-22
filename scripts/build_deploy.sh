@@ -1,66 +1,73 @@
-#!/bin/bash
-# build_deploy.sh
+#!/usr/bin/env bash
 
-set -e
+set -euo pipefail
 
-PROJECT_DIR="$HOME/repos/meta-quest3s-lab"
-BUILD_DIR="$PROJECT_DIR/build"
-APK_NAME="quest3ar"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+android_project="$repo_root/XrPassthrough/Projects/Android"
+apk_path="$android_project/build/outputs/apk/debug/XrPassthrough-debug.apk"
+application_id="com.oculus.xrpassthrough"
+activity="com.oculus.NativeActivity"
+build_only=false
 
-cd "$PROJECT_DIR"
-
-# Clean build
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
-
-# Configure with CMake
-cmake .. \
-    -DCMAKE_TOOLCHAIN_FILE=/home/oli/android-ndk-r29/build/cmake/android.toolchain.cmake \
-    -DANDROID_ABI=arm64-v8a \
-    -DANDROID_PLATFORM=android-29 \
-    -DANDROID_STL=c++_shared \
-    -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -G Ninja
-
-# Build
-ninja -j$(nproc)
-
-# Create lib directory structure and copy library (Android looks in lib/arm64)
-mkdir -p lib/arm64
-cp libmeta_quest3s_lab.so lib/arm64/
-
-# Package APK
-$ANDROID_SDK_ROOT/build-tools/35.0.0/aapt package -f -M ../AndroidManifest.xml \
-    -I $ANDROID_SDK_ROOT/platforms/android-34/android.jar \
-    -F ${APK_NAME}_unsigned.apk \
-    lib
-
-# Align APK first
-$ANDROID_SDK_ROOT/build-tools/35.0.0/zipalign -f 4 ${APK_NAME}_unsigned.apk ${APK_NAME}_aligned.apk
-
-# Sign APK with apksigner (modern Android signing)
-if [ ! -f ~/.android/debug.keystore ]; then
-    keytool -genkey -v -keystore ~/.android/debug.keystore \
-        -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-        -storepass android -keypass android \
-        -dname "CN=Android Debug,O=Android,C=US"
+if [[ "${1:-}" == "--build-only" ]]; then
+    build_only=true
+elif [[ $# -gt 0 ]]; then
+    echo "Usage: $0 [--build-only]" >&2
+    exit 2
 fi
 
-$ANDROID_SDK_ROOT/build-tools/35.0.0/apksigner sign \
-    --ks ~/.android/debug.keystore \
-    --ks-key-alias androiddebugkey \
-    --ks-pass pass:android \
-    --key-pass pass:android \
-    --out ${APK_NAME}.apk \
-    ${APK_NAME}_aligned.apk
+if [[ -n "${QUEST_ANDROID_SDK_ROOT:-}" ]]; then
+    sdk_root="$QUEST_ANDROID_SDK_ROOT"
+elif [[ -n "${ANDROID_HOME:-}" ]]; then
+    sdk_root="$ANDROID_HOME"
+elif [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then
+    sdk_root="$ANDROID_SDK_ROOT"
+elif [[ -d "$HOME/Android/Sdk" ]]; then
+    sdk_root="$HOME/Android/Sdk"
+elif [[ -d "$HOME/Android" ]]; then
+    sdk_root="$HOME/Android"
+else
+    echo "Android SDK not found. Set QUEST_ANDROID_SDK_ROOT or ANDROID_HOME." >&2
+    exit 1
+fi
 
-# Deploy
-echo "Installing on device..."
-adb install -r ${APK_NAME}.apk
+if [[ ! -d "$sdk_root" ]]; then
+    echo "Android SDK directory does not exist: $sdk_root" >&2
+    exit 1
+fi
 
-echo "Launching application..."
-adb shell am start -n com.app.quest3ar/android.app.NativeActivity
+# AGP rejects conflicting SDK variables. ANDROID_HOME is the canonical value;
+# keep ANDROID_SDK_ROOT aligned for tools that still read the legacy variable.
+export ANDROID_HOME="$sdk_root"
+export ANDROID_SDK_ROOT="$sdk_root"
+export PATH="$sdk_root/platform-tools:$PATH"
 
-echo "Monitoring logs..."
-adb logcat -s Quest3AR:V OpenXR:V *:E
+echo "Building XrPassthrough with Android SDK: $sdk_root"
+(
+    cd "$android_project"
+    ./gradlew assembleDebug
+)
+
+echo "APK: $apk_path"
+if [[ "$build_only" == true ]]; then
+    exit 0
+fi
+
+if ! command -v adb >/dev/null 2>&1; then
+    echo "adb not found. Install Android platform-tools or use --build-only." >&2
+    exit 1
+fi
+
+device_count="$(adb devices | awk '$2 == "device" { count++ } END { print count + 0 }')"
+if [[ "$device_count" -ne 1 ]]; then
+    echo "Expected exactly one authorized device; found $device_count." >&2
+    echo "Check 'adb devices -l' or use --build-only." >&2
+    exit 1
+fi
+
+adb install -r "$apk_path"
+adb shell am start -n "$application_id/$activity"
+
+echo "Application launched. Inspect logs with:"
+echo "  adb logcat -s XrPassthrough:V OpenXR:V '*:E'"
