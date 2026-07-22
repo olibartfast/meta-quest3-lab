@@ -408,7 +408,7 @@ The Quest application receives simulated or real detections from a C++ service a
 
 ## Goal
 
-Turn the experiments into a credible native XR systems portfolio.
+Improve the experiments with performance instrumentation, robustness, documentation, and production-quality engineering practices.
 
 ## Tasks
 
@@ -441,7 +441,7 @@ The repository demonstrates clean native architecture, repeatable builds, measur
 8. Add hand tracking.
 9. Add anchors.
 10. Integrate an external CV pipeline.
-11. Profile, document, and package the work as a portfolio project.
+11. Profile, document, and consolidate the project.
 
 ---
 
@@ -458,11 +458,3 @@ Expected output:
 - a working build and deployment path;
 - documentation of assumptions and unresolved platform issues;
 - no unrelated refactoring.
-
----
-
-# Portfolio Outcome
-
-The intended professional positioning is:
-
-> Native C++ XR / ML systems engineer with experience in OpenXR, Vulkan, spatial tracking, mixed reality, and integration of real-time computer-vision inference with spatial interfaces.
