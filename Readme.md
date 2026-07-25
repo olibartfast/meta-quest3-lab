@@ -62,10 +62,10 @@ Configures device connection and debugging:
 ## Build and Deploy
 
 ```bash
-./scripts/build_deploy.sh
+./scripts/build_deploy.sh --app 01-openxr-bootstrap
 ```
 
-Builds the project and deploys it to the connected Quest 3 device.
+Builds and deploys the repository-owned OpenXR bootstrap. Use `--app xrpassthrough` to select the preserved legacy baseline, and add `--build-only` to skip ADB deployment.
 
 
 

@@ -1,3 +1,7 @@
 build
+.gradle/
+.cxx/
+local.properties
+apps/*/build/
 XrPassthrough/Projects/Android/.gradle/
 XrPassthrough/Projects/Android/.cxx

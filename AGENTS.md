@@ -17,6 +17,10 @@ Run commands from the repository root unless noted:
 
 Verify device authorization first with `adb devices`.
 
+## Documentation Sources
+
+Use Meta's [Native & OpenXR LLM documentation index](https://developers.meta.com/horizon/llmstxt/documentation/native/llms.txt/) as the primary Meta-specific source for Quest platform integration, lifecycle, deployment, passthrough, debugging, and performance guidance. Use the Khronos OpenXR specification for portable API semantics. Prefer current pages from these sources over remembered SDK behavior or deprecated Oculus/VrApi material.
+
 ## Coding Style & Naming Conventions
 
 Match the existing Meta sample style: four-space indentation, opening braces on the same line for functions and control flow, and `#pragma once` in headers. Use `PascalCase` for types and methods, descriptive `camelCase` for local variables and parameters, and uppercase names for constants or macros. Keep platform-specific code behind existing `ANDROID`/OpenXR preprocessor guards. There is no repository-wide formatter; avoid unrelated reformatting and compile with the warning set documented in `.vscode/settings.json`.
