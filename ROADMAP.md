@@ -102,6 +102,8 @@ A clean Linux environment can execute the documented setup, build an APK, instal
 
 # Milestone 1 — Native OpenXR Bootstrap
 
+**Status:** Implemented; Quest 3 acceptance is pending. Do not mark complete until three clean launch/exit cycles and the legacy regression launch pass.
+
 ## Goal
 
 Create the smallest application owned by this repository that correctly manages the Android and OpenXR lifecycle.

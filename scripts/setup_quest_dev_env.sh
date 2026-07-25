@@ -1,73 +1,61 @@
-#!/bin/bash
-# setup_quest_dev_env.sh
+#!/usr/bin/env bash
 
+set -euo pipefail
 
-set -e
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/toolchain_config.sh
+source "$script_dir/toolchain_config.sh"
 
-sudo apt update
-sudo apt install -y \
-    build-essential \
-    cmake \
-    ninja-build \
-    git \
-    wget \
-    unzip \
-    openjdk-21-jdk \
+sudo apt-get update
+sudo apt-get install -y \
     adb \
-    android-sdk-platform-tools-common
+    android-sdk-platform-tools-common \
+    build-essential \
+    git \
+    ninja-build \
+    openjdk-21-jdk \
+    unzip \
+    wget
 
-NDK_VERSION="r29"
-NDK_DIR="$HOME/android-ndk-$NDK_VERSION"
-SDK_DIR="$HOME/android-sdk"
+sdk_root="$(quest_sdk_root)"
+command_line_tools_version="11076708"
+command_line_tools_url="https://dl.google.com/android/repository/commandlinetools-linux-${command_line_tools_version}_latest.zip"
+archive="$(mktemp --suffix=.zip)"
+extract_dir="$(mktemp -d)"
+trap 'rm -f "$archive"; rm -rf "$extract_dir"' EXIT
 
-# Download NDK
-if [ ! -d "$NDK_DIR" ]; then
-    echo "Downloading Android NDK $NDK_VERSION..."
-    NDK_URL="https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-    wget "$NDK_URL" -O ndk.zip
-    unzip -q ndk.zip -d "$HOME"
-    rm ndk.zip
+mkdir -p "$sdk_root/cmdline-tools"
+if [[ ! -x "$sdk_root/cmdline-tools/latest/bin/sdkmanager" ]]; then
+    wget -O "$archive" "$command_line_tools_url"
+    unzip -q "$archive" -d "$extract_dir"
+    mv "$extract_dir/cmdline-tools" "$sdk_root/cmdline-tools/latest"
 fi
 
-# Download SDK Command Line Tools
-mkdir -p "$SDK_DIR"
+quest_export_toolchain
+yes | sdkmanager --sdk_root="$sdk_root" --licenses >/dev/null || true
+sdkmanager --sdk_root="$sdk_root" \
+    "build-tools;$QUEST_BUILD_TOOLS_VERSION" \
+    "cmake;$QUEST_CMAKE_VERSION" \
+    "ndk;$QUEST_NDK_VERSION" \
+    "platform-tools" \
+    "platforms;android-$QUEST_COMPILE_SDK"
 
-if [ ! -d "$SDK_DIR/cmdline-tools/latest" ]; then
-    echo "Downloading Android SDK Command Line Tools..."
-    SDK_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-    wget "$SDK_URL" -O cmdline-tools.zip
-    unzip -q cmdline-tools.zip -d "$SDK_DIR"
-    
-    mkdir -p "$SDK_DIR/cmdline-tools/latest"
-    mv "$SDK_DIR/cmdline-tools/bin" "$SDK_DIR/cmdline-tools/latest/" 2>/dev/null || true
-    mv "$SDK_DIR/cmdline-tools/lib" "$SDK_DIR/cmdline-tools/latest/" 2>/dev/null || true
-    mv "$SDK_DIR/cmdline-tools/source.properties" "$SDK_DIR/cmdline-tools/latest/" 2>/dev/null || true
-    rm cmdline-tools.zip
-fi
-
-# Set environment variables
-if ! grep -q "ANDROID_HOME" ~/.bashrc; then
-    cat >> ~/.bashrc << EOF
-
-# Android Development
-export ANDROID_HOME="$SDK_DIR"
-export ANDROID_SDK_ROOT="$SDK_DIR"
-export ANDROID_NDK_HOME="$NDK_DIR"
-export ANDROID_NDK_ROOT="$NDK_DIR"
-export PATH=\$PATH:\$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
-export PATH=\$PATH:\$ANDROID_SDK_ROOT/platform-tools
-export PATH=\$PATH:\$ANDROID_NDK_ROOT
+profile_block="$(cat <<EOF
+# Quest native development (managed by meta-quest3-lab)
+export QUEST_ANDROID_SDK_ROOT=\"$sdk_root\"
+export ANDROID_HOME=\"\$QUEST_ANDROID_SDK_ROOT\"
+export ANDROID_SDK_ROOT=\"\$QUEST_ANDROID_SDK_ROOT\"
+export ANDROID_NDK_HOME=\"\$QUEST_ANDROID_SDK_ROOT/ndk/$QUEST_NDK_VERSION\"
+export ANDROID_NDK_ROOT=\"\$ANDROID_NDK_HOME\"
+export JAVA_HOME=\"/usr/lib/jvm/java-${QUEST_JAVA_VERSION}-openjdk-amd64\"
+export PATH=\"\$ANDROID_SDK_ROOT/platform-tools:\$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:\$PATH\"
 EOF
+)"
+
+profile_file="$HOME/.bashrc"
+if ! grep -Fq "managed by meta-quest3-lab" "$profile_file"; then
+    printf '\n%s\n' "$profile_block" >> "$profile_file"
 fi
 
-# Export for current session
-export ANDROID_SDK_ROOT="$SDK_DIR"
-export PATH="$PATH:$SDK_DIR/cmdline-tools/latest/bin:$SDK_DIR/platform-tools"
-
-# Install SDK packages
-yes | sdkmanager --sdk_root="$SDK_DIR" --licenses
-sdkmanager --sdk_root="$SDK_DIR" "platform-tools" "platforms;android-34" "build-tools;35.0.0"
-
-echo "Setup complete!"
-echo "NDK: $NDK_DIR"
-echo "SDK: $SDK_DIR"
+echo "Pinned Quest toolchain installed in $sdk_root"
+"$script_dir/print_toolchain_config.sh" --strict

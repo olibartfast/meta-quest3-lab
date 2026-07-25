@@ -1,73 +1,93 @@
 #!/usr/bin/env bash
 
-set -u
+set -uo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+# shellcheck source=scripts/toolchain_config.sh
+source "$script_dir/toolchain_config.sh"
 
-find_sdk_root() {
-    if [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then
-        printf '%s\n' "$ANDROID_SDK_ROOT"
-    elif [[ -n "${ANDROID_HOME:-}" ]]; then
-        printf '%s\n' "$ANDROID_HOME"
-    elif [[ -d "$HOME/Android/Sdk" ]]; then
-        printf '%s\n' "$HOME/Android/Sdk"
-    elif [[ -d "$HOME/Android" ]]; then
-        printf '%s\n' "$HOME/Android"
-    elif [[ -d "$HOME/android-sdk" ]]; then
-        printf '%s\n' "$HOME/android-sdk"
-    fi
-}
+strict=false
+if [[ "${1:-}" == "--strict" ]]; then
+    strict=true
+elif [[ $# -gt 0 ]]; then
+    echo "Usage: $0 [--strict]" >&2
+    exit 2
+fi
 
-find_ndk_root() {
-    local sdk_root="$1"
-    local ndk_build_path
-    local latest_ndk
+quest_export_toolchain
+sdk_root="$ANDROID_HOME"
+ndk_root="$sdk_root/ndk/$QUEST_NDK_VERSION"
+failures=0
 
-    if [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
-        printf '%s\n' "$ANDROID_NDK_HOME"
-    elif [[ -n "${ANDROID_NDK_ROOT:-}" ]]; then
-        printf '%s\n' "$ANDROID_NDK_ROOT"
-    elif [[ -n "$sdk_root" && -d "$sdk_root/ndk" ]]; then
-        latest_ndk="$(find "$sdk_root/ndk" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
-        printf '%s\n' "$latest_ndk"
-    elif ndk_build_path="$(command -v ndk-build 2>/dev/null)"; then
-        dirname "$ndk_build_path"
-    fi
-}
-
-print_tool() {
+report_path() {
     local label="$1"
-    local executable="$2"
-    shift 2
+    local path="$2"
+    printf '%-22s %s\n' "$label:" "$path"
+}
 
-    if command -v "$executable" >/dev/null 2>&1; then
-        printf '%-12s %s\n' "$label path:" "$(command -v "$executable")"
-        printf '%-12s %s\n' "$label version:" "$($executable "$@" 2>&1 | head -n 1)"
-    else
-        printf '%-12s %s\n' "$label path:" "not found"
+require_path() {
+    local label="$1"
+    local path="$2"
+    report_path "$label" "$path"
+    if [[ ! -e "$path" ]]; then
+        echo "  ERROR: required path is missing" >&2
+        failures=$((failures + 1))
     fi
 }
 
-sdk_root="$(find_sdk_root)"
-ndk_root="$(find_ndk_root "$sdk_root")"
-gradle_properties="$repo_root/XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties"
+require_version() {
+    local label="$1"
+    local expected="$2"
+    local actual="$3"
+    printf '%-22s %s (expected %s)\n' "$label:" "${actual:-not found}" "$expected"
+    if [[ "$actual" != "$expected" ]]; then
+        echo "  ERROR: $label version mismatch" >&2
+        failures=$((failures + 1))
+    fi
+}
 
-printf '%-18s %s\n' "Repository:" "$repo_root"
-printf '%-18s %s\n' "ANDROID_SDK_ROOT:" "${sdk_root:-not found}"
-printf '%-18s %s\n' "ANDROID_NDK_ROOT:" "${ndk_root:-not found}"
+java_version="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')"
+cmake_version=""
+if [[ -x "$sdk_root/cmake/$QUEST_CMAKE_VERSION/bin/cmake" ]]; then
+    cmake_version="$("$sdk_root/cmake/$QUEST_CMAKE_VERSION/bin/cmake" --version | sed -n '1s/^cmake version //p')"
+    cmake_version="${cmake_version%%-*}"
+fi
+ndk_version=""
+if [[ -f "$ndk_root/source.properties" ]]; then
+    ndk_version="$(sed -n 's/^Pkg.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_root/source.properties")"
+fi
+gradle_version="$(sed -n 's|^distributionUrl=.*/gradle-\([^-]*\)-.*|\1|p' \
+    "$repo_root/XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties")"
+agp_version="$(sed -n 's/.*com\.android\.application.*version "\([^"]*\)".*/\1/p' \
+    "$repo_root/build.gradle")"
+ninja_version="$(ninja --version 2>/dev/null || true)"
+adb_version="$("$sdk_root/platform-tools/adb" version 2>/dev/null | sed -n '1s/^Android Debug Bridge version //p')"
+sdkmanager_version="$("$sdk_root/cmdline-tools/latest/bin/sdkmanager" --version 2>/dev/null | sed -n '1p')"
 
-if [[ -n "$ndk_root" && -f "$ndk_root/source.properties" ]]; then
-    printf '%-18s %s\n' "NDK version:" "$(sed -n 's/^Pkg.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_root/source.properties")"
+report_path "Repository" "$repo_root"
+report_path "Android SDK" "$sdk_root"
+report_path "JAVA_HOME" "${JAVA_HOME:-not found}"
+require_version "Java" "$QUEST_JAVA_VERSION" "$java_version"
+require_path "SDK platform" "$sdk_root/platforms/android-$QUEST_COMPILE_SDK"
+require_path "Build tools" "$sdk_root/build-tools/$QUEST_BUILD_TOOLS_VERSION"
+require_version "CMake" "$QUEST_CMAKE_VERSION" "$cmake_version"
+require_version "NDK" "$QUEST_NDK_VERSION" "$ndk_version"
+require_version "Gradle wrapper" "$QUEST_GRADLE_VERSION" "$gradle_version"
+require_version "Android Gradle plugin" "$QUEST_AGP_VERSION" "$agp_version"
+require_path "ADB" "$sdk_root/platform-tools/adb"
+require_path "sdkmanager" "$sdk_root/cmdline-tools/latest/bin/sdkmanager"
+report_path "ADB version" "${adb_version:-not found}"
+report_path "sdkmanager version" "${sdkmanager_version:-not found}"
+report_path "Ninja version" "${ninja_version:-not found}"
+
+if [[ "$strict" == true && "$failures" -ne 0 ]]; then
+    echo "$failures toolchain requirement(s) not satisfied." >&2
+    exit 1
+fi
+
+if [[ "$failures" -eq 0 ]]; then
+    echo "Toolchain matches all repository pins."
 else
-    printf '%-18s %s\n' "NDK version:" "unknown"
+    echo "$failures toolchain requirement(s) not satisfied (run with --strict to fail)."
 fi
-
-if [[ -f "$gradle_properties" ]]; then
-    printf '%-18s %s\n' "Gradle wrapper:" "$(sed -n 's|^distributionUrl=.*/gradle-\([^-]*\)-.*|\1|p' "$gradle_properties")"
-fi
-
-print_tool "Java" java -version
-print_tool "CMake" cmake --version
-print_tool "Ninja" ninja --version
-print_tool "ADB" adb version
-print_tool "sdkmanager" sdkmanager --version

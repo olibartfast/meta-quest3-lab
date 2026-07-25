@@ -36,12 +36,14 @@ apply plugin: 'com.android.application'
 
 android {
   namespace "com.oculus.xrpassthrough"
-  compileSdk 32
+  compileSdk 34
+  buildToolsVersion "34.0.0"
+  ndkVersion "29.0.14206865"
 
   defaultConfig {
     applicationId "com.oculus.xrpassthrough"
     minSdk 26
-    targetSdk 32
+    targetSdk 34
     versionCode 1
     versionName "1.0"
 
@@ -81,6 +83,7 @@ android {
   externalNativeBuild {
     cmake {
       path file('../../CMakeLists.txt')
+      version '3.22.1'
     }
   }
 

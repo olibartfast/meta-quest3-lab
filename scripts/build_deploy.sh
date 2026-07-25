@@ -4,59 +4,83 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/.." && pwd)"
-android_project="$repo_root/XrPassthrough/Projects/Android"
-apk_path="$android_project/build/outputs/apk/debug/XrPassthrough-debug.apk"
-application_id="com.oculus.xrpassthrough"
-activity="com.oculus.NativeActivity"
-build_only=false
+# shellcheck source=scripts/toolchain_config.sh
+source "$script_dir/toolchain_config.sh"
 
-if [[ "${1:-}" == "--build-only" ]]; then
-    build_only=true
-elif [[ $# -gt 0 ]]; then
-    echo "Usage: $0 [--build-only]" >&2
+app=""
+build_only=false
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --app)
+            if [[ $# -lt 2 ]]; then
+                echo "--app requires a value" >&2
+                exit 2
+            fi
+            app="$2"
+            shift 2
+            ;;
+        --build-only)
+            build_only=true
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $1" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|xrpassthrough} [--build-only]" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [[ -z "$app" ]]; then
+    echo "Select an application with --app." >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|xrpassthrough} [--build-only]" >&2
     exit 2
 fi
 
-if [[ -n "${QUEST_ANDROID_SDK_ROOT:-}" ]]; then
-    sdk_root="$QUEST_ANDROID_SDK_ROOT"
-elif [[ -n "${ANDROID_HOME:-}" ]]; then
-    sdk_root="$ANDROID_HOME"
-elif [[ -n "${ANDROID_SDK_ROOT:-}" ]]; then
-    sdk_root="$ANDROID_SDK_ROOT"
-elif [[ -d "$HOME/Android/Sdk" ]]; then
-    sdk_root="$HOME/Android/Sdk"
-elif [[ -d "$HOME/Android" ]]; then
-    sdk_root="$HOME/Android"
+quest_export_toolchain
+"$script_dir/print_toolchain_config.sh" --strict
+
+case "$app" in
+    01-openxr-bootstrap)
+        build_command=("$repo_root/gradlew" ":apps:01-openxr-bootstrap:assembleDebug")
+        apk_path="$repo_root/apps/01-openxr-bootstrap/build/outputs/apk/debug/01-openxr-bootstrap-debug.apk"
+        application_id="com.olibartfast.questlab.openxrbootstrap"
+        activity="android.app.NativeActivity"
+        log_tag="OpenXRBootstrap"
+        ;;
+    xrpassthrough)
+        build_command=("$repo_root/XrPassthrough/Projects/Android/gradlew" assembleDebug)
+        build_directory="$repo_root/XrPassthrough/Projects/Android"
+        apk_path="$build_directory/build/outputs/apk/debug/XrPassthrough-debug.apk"
+        application_id="com.oculus.xrpassthrough"
+        activity="com.oculus.NativeActivity"
+        log_tag="XrPassthrough"
+        ;;
+    *)
+        echo "Unknown application: $app" >&2
+        echo "Available applications: 01-openxr-bootstrap, xrpassthrough" >&2
+        exit 2
+        ;;
+esac
+
+echo "Building $app with Android SDK: $ANDROID_HOME"
+if [[ -n "${build_directory:-}" ]]; then
+    (
+        cd "$build_directory"
+        "${build_command[@]}"
+    )
 else
-    echo "Android SDK not found. Set QUEST_ANDROID_SDK_ROOT or ANDROID_HOME." >&2
-    exit 1
+    "${build_command[@]}"
 fi
 
-if [[ ! -d "$sdk_root" ]]; then
-    echo "Android SDK directory does not exist: $sdk_root" >&2
+if [[ ! -f "$apk_path" ]]; then
+    echo "Expected APK was not produced: $apk_path" >&2
     exit 1
 fi
-
-# AGP rejects conflicting SDK variables. ANDROID_HOME is the canonical value;
-# keep ANDROID_SDK_ROOT aligned for tools that still read the legacy variable.
-export ANDROID_HOME="$sdk_root"
-export ANDROID_SDK_ROOT="$sdk_root"
-export PATH="$sdk_root/platform-tools:$PATH"
-
-echo "Building XrPassthrough with Android SDK: $sdk_root"
-(
-    cd "$android_project"
-    ./gradlew assembleDebug
-)
-
 echo "APK: $apk_path"
+
 if [[ "$build_only" == true ]]; then
     exit 0
-fi
-
-if ! command -v adb >/dev/null 2>&1; then
-    echo "adb not found. Install Android platform-tools or use --build-only." >&2
-    exit 1
 fi
 
 device_count="$(adb devices | awk '$2 == "device" { count++ } END { print count + 0 }')"
@@ -70,4 +94,4 @@ adb install -r "$apk_path"
 adb shell am start -n "$application_id/$activity"
 
 echo "Application launched. Inspect logs with:"
-echo "  adb logcat -s XrPassthrough:V OpenXR:V '*:E'"
+echo "  adb logcat -s $log_tag:V OpenXR:V '*:S'"

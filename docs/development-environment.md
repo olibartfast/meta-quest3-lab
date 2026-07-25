@@ -2,29 +2,35 @@
 
 ## Current Application
 
-`XrPassthrough` is the repository's working native Android application. It already creates an OpenXR instance and session, handles lifecycle events, creates `VIEW`, `LOCAL`, and `STAGE` spaces, submits stereo frames, reads controller actions, and supports `XR_FB_passthrough`. Its renderer is OpenGL ES; the Vulkan renderer described in the roadmap is not implemented yet.
+The repository contains two independently selectable Android applications. `XrPassthrough` is the preserved Meta/OpenGL ES baseline. `apps/01-openxr-bootstrap` is the repository-owned, Vulkan-bound Milestone 1 application; it submits empty frames and intentionally renders no content.
 
 ## Inspect the Toolchain
 
 From the repository root, run:
 
 ```bash
-./scripts/print_toolchain_config.sh
+./scripts/print_toolchain_config.sh --strict
 ```
 
-The command reports the repository path, Android SDK and NDK paths, NDK and Gradle wrapper versions, and the resolved Java, CMake, Ninja, ADB, and `sdkmanager` executables. Resolve conflicting `ANDROID_HOME` and `ANDROID_SDK_ROOT` values before invoking Gradle directly.
+The strict check enforces Java 21, SDK Platform 34, Build Tools 34.0.0, CMake 3.22.1, and NDK 29.0.14206865. `QUEST_ANDROID_SDK_ROOT` selects the canonical SDK, followed by `ANDROID_HOME`, then `ANDROID_SDK_ROOT`; all Android variables are normalized to that one root. `QUEST_JAVA_HOME` can select a nonstandard Java 21 installation.
+
+## Authoritative Documentation
+
+Meta publishes [LLM-optimized developer resources](https://developers.meta.com/horizon/essentials/ai-solutions/) and a dedicated [Native & OpenXR documentation index](https://developers.meta.com/horizon/llmstxt/documentation/native/llms.txt/). Use that index for current Quest-specific Android, OpenXR, Vulkan, device, deployment, and debugging guidance. Use the Khronos OpenXR specification for cross-platform API semantics.
 
 ## Build
 
 Use the repository-owned wrapper command:
 
 ```bash
-./scripts/build_deploy.sh --build-only
+./scripts/build_deploy.sh --app 01-openxr-bootstrap --build-only
+./scripts/build_deploy.sh --app xrpassthrough --build-only
 ```
 
-This normalizes both Android SDK variables to one path and runs `./gradlew assembleDebug`. SDK selection uses `QUEST_ANDROID_SDK_ROOT`, then `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, followed by common user-local SDK directories. The APK is written to:
+Application selection is explicit so the legacy baseline remains available. The bootstrap uses the shared root Gradle 8.5/AGP 8.2 workspace; the passthrough selection uses its preserved standalone build. APKs are written to:
 
 ```text
+apps/01-openxr-bootstrap/build/outputs/apk/debug/01-openxr-bootstrap-debug.apk
 XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
 ```
 
@@ -34,13 +40,13 @@ Enable Developer Mode and USB debugging on the Quest, connect it over USB, accep
 
 ```bash
 adb devices -l
-./scripts/build_deploy.sh
+./scripts/build_deploy.sh --app 01-openxr-bootstrap
 ```
 
-The script builds, installs with `adb install -r`, and launches `com.oculus.xrpassthrough/com.oculus.NativeActivity`. Keep the headset awake and the controllers active during launch. Inspect runtime output with:
+The script builds, installs with `adb install -r`, and launches the selected activity. Keep the headset awake and the controllers active during launch. Inspect bootstrap runtime output with:
 
 ```bash
-adb logcat -s XrPassthrough:V OpenXR:V '*:S'
+adb logcat -s OpenXRBootstrap:V OpenXR:V '*:S'
 ```
 
 ## Power During Development
@@ -55,30 +61,72 @@ adb shell dumpsys battery
 
 For long sessions, prefer a reputable USB-C Power Delivery charger rated for at least 18 W; a 30 W unit provides useful headroom. Use a USB-C cable rated for at least 60 W, long enough to avoid pulling on the headset connector. For simultaneous wired ADB and external power, use a Quest-compatible data cable with a separate power-injection port. Do not assume that a generic hub's PD input powers its downstream data port.
 
-The simplest development setup is wireless ADB with the headset connected directly to its charger:
+## ADB over Wi-Fi
+
+The simplest long-running development setup is wireless ADB with the headset connected directly to its charger. The computer and Quest must be on the same trusted local network.
+
+Start with USB connected, the headset unlocked, and the USB debugging prompt accepted:
 
 ```bash
-# Run while USB is still connected; obtain the wlan0 address from the output.
-adb tcpip 5555
+adb devices -l
 adb shell ip route
+```
 
-# Disconnect USB, then connect over the same trusted local network.
+Find the `src` address on the `wlan0` route. For example, this route identifies `192.168.0.123` as the headset address:
+
+```text
+192.168.0.0/24 dev wlan0 proto kernel scope link src 192.168.0.123
+```
+
+Restart the headset's ADB daemon in TCP mode and connect to that address:
+
+```bash
+adb tcpip 5555
 adb connect <QUEST_IP>:5555
 adb devices -l
 ```
 
-Return ADB to USB mode later with `adb usb`. Avoid exposing TCP port 5555 on an untrusted network.
+The final command initially shows the same headset twice: once by USB serial and once as `<QUEST_IP>:5555`. Unplug USB and verify that only the Wi-Fi transport remains:
+
+```bash
+adb devices -l
+```
+
+This repository's deployment script requires exactly one authorized ADB transport, so disconnect USB before running:
+
+```bash
+./scripts/build_deploy.sh --app 01-openxr-bootstrap
+```
+
+If a command must be run while both transports are present, select one explicitly:
+
+```bash
+adb -s <QUEST_IP>:5555 shell
+adb -s <USB_SERIAL> shell
+```
+
+The Quest's DHCP address can change, and TCP mode may reset after a headset reboot. If reconnection fails, repeat the USB setup. Use either of the following cleanup commands as appropriate:
+
+```bash
+# Return the headset's ADB daemon to USB mode; the Wi-Fi connection will close.
+adb -s <QUEST_IP>:5555 usb
+
+# Or only remove the current computer's Wi-Fi connection.
+adb disconnect <QUEST_IP>:5555
+```
+
+Avoid enabling or exposing TCP port 5555 on an untrusted network.
 
 ## Troubleshooting
 
-- **Different SDK paths:** set `QUEST_ANDROID_SDK_ROOT` to the intended SDK. The build script aligns both Android SDK variables.
+- **Different SDK paths:** set `QUEST_ANDROID_SDK_ROOT` to the intended SDK. Setup, diagnostics, and deployment all align the Android variables.
 - **No authorized device:** run `adb kill-server`, reconnect the headset, and accept its USB debugging prompt.
 - **Linux USB permissions:** run `./scripts/udev_env_setup.sh`, then log out and back in after group changes.
 - **Battery drains over USB:** use the power guidance above, close the XR application between tests, and let the headset cool if its reported temperature remains elevated.
 - **Launch requires controllers:** wake both controllers and put on the headset before launching the NativeActivity.
-- **Java native-access warnings:** the current Gradle wrapper can build despite these warnings on newer Java releases; Java 21 remains the intended setup version.
-- **NDK selection:** Gradle currently selects an installed SDK NDK automatically. Pinning and validating one repository-wide NDK version remains Milestone 0 work.
+- **Black compositor view:** this is expected from `01-openxr-bootstrap`, which submits zero layers in Milestone 1.
+- **Toolchain mismatch:** run `./scripts/setup_quest_dev_env.sh`; builds reject versions other than the repository pins.
 
 ## Verified Baseline
 
-On 2026-07-22, the repository successfully built the debug APK, detected an authorized Quest 3 over ADB, installed the ARM64 package, and launched its native activity. Capturing a clean lifecycle log from a fresh headset session remains part of Milestone 0 validation.
+On 2026-07-22, the legacy application successfully built, installed, and launched on Quest 3. Milestone 1 still requires its documented three-cycle device acceptance run before `ROADMAP.md` can mark it complete.
