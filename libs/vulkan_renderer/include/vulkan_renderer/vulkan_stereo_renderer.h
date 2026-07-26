@@ -13,11 +13,14 @@ namespace questlab {
 enum class DebugLineShape : int32_t {
     Axes = 0,
     Rectangle = 1,
+    Ray = 2,
+    Box = 3,
 };
 
 struct DebugLineDraw {
     DebugLineShape shape = DebugLineShape::Axes;
     math::Mat4 model = math::IdentityMatrix();
+    std::array<float, 4> color = {0.0F, 0.9F, 1.0F, 1.0F};
 };
 
 class VulkanSceneProvider {

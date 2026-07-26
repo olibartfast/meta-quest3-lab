@@ -394,7 +394,9 @@ bool XrSessionContext::LocateTrackedSpaces(
     return true;
 }
 
-bool XrSessionContext::PumpFrame(XrFrameRenderer* renderer) {
+bool XrSessionContext::PumpFrame(
+    XrFrameRenderer* renderer,
+    XrFrameUpdater* updater) {
     if (!running_) {
         return true;
     }
@@ -420,7 +422,17 @@ bool XrSessionContext::PumpFrame(XrFrameRenderer* renderer) {
 
     bool frameSucceeded = true;
     const XrCompositionLayerBaseHeader* layer = nullptr;
-    if (frameState.shouldRender == XR_TRUE && renderer != nullptr) {
+    if (updater != nullptr &&
+        !updater->UpdateFrame({
+            frameState.predictedDisplayTime,
+            localSpace_,
+        })) {
+        LogError("Frame updater failed; submitting an empty frame");
+        frameSucceeded = false;
+    }
+    if (frameSucceeded &&
+        frameState.shouldRender == XR_TRUE &&
+        renderer != nullptr) {
         XrViewLocateInfo locateInfo{XR_TYPE_VIEW_LOCATE_INFO};
         locateInfo.viewConfigurationType = viewConfiguration_;
         locateInfo.displayTime = frameState.predictedDisplayTime;
@@ -493,7 +505,7 @@ bool XrSessionContext::PumpFrame(XrFrameRenderer* renderer) {
 }
 
 bool XrSessionContext::PumpEmptyFrame() {
-    return PumpFrame(nullptr);
+    return PumpFrame(nullptr, nullptr);
 }
 
 void XrSessionContext::RequestExit() {

@@ -6,6 +6,17 @@
 
 namespace questlab {
 
+struct XrFrameUpdateInfo {
+    XrTime predictedDisplayTime = 0;
+    XrSpace baseSpace = XR_NULL_HANDLE;
+};
+
+class XrFrameUpdater {
+public:
+    virtual ~XrFrameUpdater() = default;
+    virtual bool UpdateFrame(const XrFrameUpdateInfo& frame) = 0;
+};
+
 struct XrFrameRenderInfo {
     XrTime predictedDisplayTime = 0;
     XrSpace space = XR_NULL_HANDLE;
@@ -41,7 +52,9 @@ public:
         XrSystemId systemId,
         const void* graphicsBindingChain);
     bool PollEvents();
-    bool PumpFrame(XrFrameRenderer* renderer);
+    bool PumpFrame(
+        XrFrameRenderer* renderer,
+        XrFrameUpdater* updater = nullptr);
     bool PumpEmptyFrame();
     void RequestExit();
     void Shutdown();

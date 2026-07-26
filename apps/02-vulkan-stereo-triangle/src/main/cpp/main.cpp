@@ -52,7 +52,10 @@ void android_main(android_app* app) {
     bindingOptions.enableValidation = true;
 #endif
 
-    if (!xrInstance.Initialize(app->activity->vm, app->activity->clazz) ||
+    if (!xrInstance.Initialize(
+            app->activity->vm,
+            app->activity->clazz,
+            {"Vulkan Stereo Triangle", 1}) ||
         !vulkanBinding.Initialize(xrInstance, bindingOptions) ||
         !xrSession.Initialize(
             xrInstance.Instance(),

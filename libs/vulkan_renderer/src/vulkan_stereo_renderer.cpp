@@ -45,9 +45,20 @@ constexpr uint32_t kDebugLineVertexShader[] =
 
 struct DebugPushConstants {
     math::Mat4 modelViewProjection;
+    std::array<float, 4> color{};
     int32_t shape = 0;
     std::array<int32_t, 3> padding{};
 };
+
+uint32_t DebugVertexCount(DebugLineShape shape) {
+    switch (shape) {
+        case DebugLineShape::Axes: return 6U;
+        case DebugLineShape::Rectangle: return 8U;
+        case DebugLineShape::Ray: return 2U;
+        case DebugLineShape::Box: return 24U;
+    }
+    return 0U;
+}
 
 }  // namespace
 
@@ -617,6 +628,7 @@ struct VulkanStereoRenderer::Impl {
                 DebugPushConstants pushConstants;
                 pushConstants.modelViewProjection =
                     math::Multiply(viewProjection, draw.model);
+                pushConstants.color = draw.color;
                 pushConstants.shape = static_cast<int32_t>(draw.shape);
                 vkCmdPushConstants(
                     resource.commandBuffer,
@@ -626,7 +638,7 @@ struct VulkanStereoRenderer::Impl {
                     sizeof(pushConstants),
                     &pushConstants);
                 const uint32_t vertexCount =
-                    draw.shape == DebugLineShape::Axes ? 6U : 8U;
+                    DebugVertexCount(draw.shape);
                 vkCmdDraw(
                     resource.commandBuffer,
                     vertexCount,
