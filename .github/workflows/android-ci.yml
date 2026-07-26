@@ -57,6 +57,7 @@ jobs:
       - name: Install pinned Android toolchain
         run: |
           source scripts/toolchain_config.sh
+          quest_export_toolchain
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager \
             "platform-tools" \
