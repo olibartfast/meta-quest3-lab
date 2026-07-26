@@ -4,6 +4,11 @@
 
 namespace questlab {
 
+struct XrInstanceOptions {
+    const char* applicationName = "QuestLab";
+    uint32_t applicationVersion = 1;
+};
+
 class XrInstanceContext {
 public:
     XrInstanceContext() = default;
@@ -12,7 +17,10 @@ public:
     XrInstanceContext(const XrInstanceContext&) = delete;
     XrInstanceContext& operator=(const XrInstanceContext&) = delete;
 
-    bool Initialize(void* applicationVm, void* applicationActivity);
+    bool Initialize(
+        void* applicationVm,
+        void* applicationActivity,
+        const XrInstanceOptions& options = {});
     void Shutdown();
 
     XrInstance Instance() const { return instance_; }

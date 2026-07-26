@@ -1,5 +1,6 @@
 add_library(xr_core STATIC
     src/xr_error.cpp
+    src/xr_controller_actions.cpp
     src/xr_instance.cpp
     src/xr_session.cpp
     src/vulkan_session_binding.cpp

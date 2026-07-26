@@ -31,7 +31,10 @@ XrInstanceContext::~XrInstanceContext() {
     Shutdown();
 }
 
-bool XrInstanceContext::Initialize(void* applicationVm, void* applicationActivity) {
+bool XrInstanceContext::Initialize(
+    void* applicationVm,
+    void* applicationActivity,
+    const XrInstanceOptions& options) {
     if (instance_ != XR_NULL_HANDLE) {
         return true;
     }
@@ -101,11 +104,15 @@ bool XrInstanceContext::Initialize(void* applicationVm, void* applicationActivit
 
     XrInstanceCreateInfo createInfo{XR_TYPE_INSTANCE_CREATE_INFO};
     createInfo.next = &androidInfo;
+    const char* applicationName =
+        options.applicationName != nullptr && options.applicationName[0] != '\0'
+            ? options.applicationName
+            : "QuestLab";
     std::strncpy(
         createInfo.applicationInfo.applicationName,
-        "OpenXR Bootstrap",
+        applicationName,
         XR_MAX_APPLICATION_NAME_SIZE - 1);
-    createInfo.applicationInfo.applicationVersion = 1;
+    createInfo.applicationInfo.applicationVersion = options.applicationVersion;
     std::strncpy(
         createInfo.applicationInfo.engineName,
         "questlab",

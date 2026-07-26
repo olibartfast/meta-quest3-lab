@@ -45,7 +45,10 @@ void android_main(android_app* app) {
     questlab::VulkanSessionBinding vulkanBinding;
     questlab::XrSessionContext xrSession;
 
-    if (!xrInstance.Initialize(app->activity->vm, app->activity->clazz) ||
+    if (!xrInstance.Initialize(
+            app->activity->vm,
+            app->activity->clazz,
+            {"OpenXR Bootstrap", 1}) ||
         !vulkanBinding.Initialize(xrInstance) ||
         !xrSession.Initialize(
             xrInstance.Instance(),

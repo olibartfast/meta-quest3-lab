@@ -6,6 +6,11 @@ namespace questlab::math {
 
 constexpr float kDefaultEpsilon = 1.0e-6F;
 
+struct Vec2 {
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
 struct Vec3 {
     float x = 0.0F;
     float y = 0.0F;

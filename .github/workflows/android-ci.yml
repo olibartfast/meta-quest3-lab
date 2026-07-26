@@ -40,6 +40,7 @@ jobs:
             apps/01-openxr-bootstrap/build.gradle
             apps/02-vulkan-stereo-triangle/build.gradle
             apps/03-head-pose/build.gradle
+            apps/04-controller-input/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -77,6 +78,12 @@ jobs:
           cmake --build build/xr-math-tests --parallel
           ctest --test-dir build/xr-math-tests --output-on-failure
 
+      - name: Test XR interaction
+        run: |
+          cmake -S libs/xr_interaction -B build/xr-interaction-tests -DBUILD_TESTING=ON
+          cmake --build build/xr-interaction-tests --parallel
+          ctest --test-dir build/xr-interaction-tests --output-on-failure
+
       - name: Build OpenXR bootstrap
         run: ./scripts/build_deploy.sh --app 01-openxr-bootstrap --build-only
 
@@ -85,6 +92,9 @@ jobs:
 
       - name: Build head pose and coordinate spaces
         run: ./scripts/build_deploy.sh --app 03-head-pose --build-only
+
+      - name: Build controller input and interaction
+        run: ./scripts/build_deploy.sh --app 04-controller-input --build-only
 
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
@@ -97,6 +107,7 @@ jobs:
             apps/01-openxr-bootstrap/build/outputs/apk/debug/01-openxr-bootstrap-debug.apk
             apps/02-vulkan-stereo-triangle/build/outputs/apk/debug/02-vulkan-stereo-triangle-debug.apk
             apps/03-head-pose/build/outputs/apk/debug/03-head-pose-debug.apk
+            apps/04-controller-input/build/outputs/apk/debug/04-controller-input-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14

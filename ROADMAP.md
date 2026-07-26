@@ -215,6 +215,8 @@ The application displays a stable world-space reference object while separately 
 
 # Milestone 4 — Controller Input and Interaction
 
+Status: complete. Quest device acceptance passed.
+
 ## Goal
 
 Implement portable OpenXR input rather than hard-coding device-specific controller events.
@@ -233,6 +235,8 @@ Implement portable OpenXR input rather than hard-coding device-specific controll
 
 - `apps/04-controller-input`.
 - Reusable action and interaction abstractions.
+- `libs/xr_interaction`.
+- `docs/openxr-actions.md`.
 
 ## Definition of Done
 
