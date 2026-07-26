@@ -12,6 +12,11 @@ struct XrFrameRenderInfo {
     const XrView* views = nullptr;
     uint32_t viewCount = 0;
     XrViewStateFlags viewStateFlags = 0;
+    XrSpaceLocation headInLocal{XR_TYPE_SPACE_LOCATION};
+    XrSpaceLocation stageInLocal{XR_TYPE_SPACE_LOCATION};
+    bool stageAvailable = false;
+    bool stageBoundsAvailable = false;
+    XrExtent2Df stageBounds{};
 };
 
 class XrFrameRenderer {
@@ -44,7 +49,12 @@ public:
     bool IsRunning() const { return running_; }
     bool ShouldExit() const { return shouldExit_; }
     XrSession Session() const { return session_; }
+    XrSpace ViewSpace() const { return viewSpace_; }
     XrSpace LocalSpace() const { return localSpace_; }
+    XrSpace StageSpace() const { return stageSpace_; }
+    bool HasStageSpace() const { return stageSpace_ != XR_NULL_HANDLE; }
+    bool HasStageBounds() const { return stageBoundsAvailable_; }
+    XrExtent2Df StageBounds() const { return stageBounds_; }
     XrViewConfigurationType ViewConfiguration() const { return viewConfiguration_; }
     XrEnvironmentBlendMode BlendMode() const { return blendMode_; }
     const std::vector<XrViewConfigurationView>& ViewConfigurationViews() const {
@@ -53,10 +63,16 @@ public:
 
 private:
     bool HandleSessionStateChanged(const XrEventDataSessionStateChanged& event);
+    bool CreateReferenceSpaces();
+    bool LocateTrackedSpaces(XrTime time, XrFrameRenderInfo* renderInfo);
 
     XrInstance instance_ = XR_NULL_HANDLE;
     XrSession session_ = XR_NULL_HANDLE;
+    XrSpace viewSpace_ = XR_NULL_HANDLE;
     XrSpace localSpace_ = XR_NULL_HANDLE;
+    XrSpace stageSpace_ = XR_NULL_HANDLE;
+    XrExtent2Df stageBounds_{};
+    bool stageBoundsAvailable_ = false;
     XrSessionState state_ = XR_SESSION_STATE_UNKNOWN;
     XrViewConfigurationType viewConfiguration_ =
         XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;

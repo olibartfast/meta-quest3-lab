@@ -5,6 +5,13 @@ add_library(xr_core STATIC
     src/vulkan_session_binding.cpp
 )
 
+if(NOT TARGET xr_math)
+    add_subdirectory(
+        ../xr_math
+        "${CMAKE_CURRENT_BINARY_DIR}/xr_math"
+    )
+endif()
+
 set_target_properties(xr_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
@@ -26,6 +33,7 @@ target_compile_options(xr_core PRIVATE
 )
 
 target_link_libraries(xr_core PUBLIC
+    xr_math
     OpenXR::openxr_loader
     log
     vulkan
