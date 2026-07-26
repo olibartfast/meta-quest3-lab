@@ -246,6 +246,8 @@ The user can point at and select a virtual object with either controller using O
 
 # Milestone 5 — Passthrough Mixed Reality
 
+Status: complete. Quest visual acceptance passed.
+
 ## Goal
 
 Create a minimal mixed-reality application with passthrough and native Vulkan content.
@@ -264,6 +266,8 @@ Create a minimal mixed-reality application with passthrough and native Vulkan co
 - `apps/05-passthrough`.
 - `libs/xr_core/passthrough_interface.*`.
 - Meta-specific implementation in a clearly named module.
+- `libs/xr_meta_passthrough`.
+- `docs/passthrough.md`.
 
 ## Definition of Done
 

@@ -32,6 +32,10 @@ public:
         std::vector<DebugLineDraw>* draws) = 0;
 };
 
+struct VulkanRendererOptions {
+    bool transparentBackground = false;
+};
+
 class VulkanStereoRenderer final : public XrFrameRenderer {
 public:
     VulkanStereoRenderer();
@@ -44,7 +48,8 @@ public:
         XrInstance xrInstance,
         const XrSessionContext& xrSession,
         const VulkanDeviceContext& deviceContext,
-        VulkanSceneProvider* sceneProvider = nullptr);
+        VulkanSceneProvider* sceneProvider = nullptr,
+        const VulkanRendererOptions& options = {});
     bool RenderFrame(
         const XrFrameRenderInfo& frame,
         const XrCompositionLayerBaseHeader** layer) override;

@@ -68,8 +68,9 @@ Configures device connection and debugging:
 Builds and deploys the Vulkan stereo triangle. Use `--app 01-openxr-bootstrap`
 for the empty-frame lifecycle application, `--app 03-head-pose` for the
 tracking and coordinate-space visualization, `--app 04-controller-input` for
-controller rays and selection, or `--app xrpassthrough` for the preserved
-legacy baseline. Add `--build-only` to skip ADB deployment.
+controller rays and selection, `--app 05-passthrough` for native Vulkan mixed
+reality, or `--app xrpassthrough` for the preserved legacy baseline. Add
+`--build-only` to skip ADB deployment.
 
 
 

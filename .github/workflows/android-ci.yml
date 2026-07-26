@@ -41,6 +41,7 @@ jobs:
             apps/02-vulkan-stereo-triangle/build.gradle
             apps/03-head-pose/build.gradle
             apps/04-controller-input/build.gradle
+            apps/05-passthrough/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -96,6 +97,9 @@ jobs:
       - name: Build controller input and interaction
         run: ./scripts/build_deploy.sh --app 04-controller-input --build-only
 
+      - name: Build passthrough mixed reality
+        run: ./scripts/build_deploy.sh --app 05-passthrough --build-only
+
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
 
@@ -108,6 +112,7 @@ jobs:
             apps/02-vulkan-stereo-triangle/build/outputs/apk/debug/02-vulkan-stereo-triangle-debug.apk
             apps/03-head-pose/build/outputs/apk/debug/03-head-pose-debug.apk
             apps/04-controller-input/build/outputs/apk/debug/04-controller-input-debug.apk
+            apps/05-passthrough/build/outputs/apk/debug/05-passthrough-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14

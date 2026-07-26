@@ -2,11 +2,14 @@
 
 #include <openxr/openxr.h>
 
+#include <vector>
+
 namespace questlab {
 
 struct XrInstanceOptions {
     const char* applicationName = "QuestLab";
     uint32_t applicationVersion = 1;
+    std::vector<const char*> additionalExtensions{};
 };
 
 class XrInstanceContext {

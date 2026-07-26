@@ -98,6 +98,7 @@ struct VulkanStereoRenderer::Impl {
     };
     XrCompositionLayerProjection projectionLayer{
         XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    bool transparentBackground = false;
     bool initialized = false;
 
     bool CreateSwapchains(
@@ -518,11 +519,13 @@ struct VulkanStereoRenderer::Impl {
         XrInstance instance,
         const XrSessionContext& session,
         const VulkanDeviceContext& deviceContext,
-        VulkanSceneProvider* provider) {
+        VulkanSceneProvider* provider,
+        const VulkanRendererOptions& options) {
         xrInstance = instance;
         xrSession = session.Session();
         context = deviceContext;
         sceneProvider = provider;
+        transparentBackground = options.transparentBackground;
         const std::vector<XrViewConfigurationView>& configurations =
             session.ViewConfigurationViews();
         if (xrInstance == XR_NULL_HANDLE ||
@@ -542,7 +545,9 @@ struct VulkanStereoRenderer::Impl {
             return false;
         }
         initialized = true;
-        LogInfo("Vulkan stereo renderer initialized");
+        LogInfo(
+            "Vulkan stereo renderer initialized (%s background)",
+            transparentBackground ? "transparent" : "opaque");
         return true;
     }
 
@@ -579,7 +584,9 @@ struct VulkanStereoRenderer::Impl {
         }
 
         VkClearValue clearValue{};
-        clearValue.color = {{0.015F, 0.025F, 0.055F, 1.0F}};
+        clearValue.color = transparentBackground
+            ? VkClearColorValue{{0.0F, 0.0F, 0.0F, 0.0F}}
+            : VkClearColorValue{{0.015F, 0.025F, 0.055F, 1.0F}};
         VkRenderPassBeginInfo renderPassBegin{
             VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         renderPassBegin.renderPass = renderPass;
@@ -772,6 +779,11 @@ struct VulkanStereoRenderer::Impl {
         projectionLayer =
             XrCompositionLayerProjection{
                 XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+        if (transparentBackground) {
+            projectionLayer.layerFlags =
+                XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+        }
         projectionLayer.space = frame.space;
         projectionLayer.viewCount =
             static_cast<uint32_t>(projectionViews.size());
@@ -846,6 +858,7 @@ struct VulkanStereoRenderer::Impl {
         colorFormat = VK_FORMAT_UNDEFINED;
         frameDraws.clear();
         sceneProvider = nullptr;
+        transparentBackground = false;
         context = {};
         xrSession = XR_NULL_HANDLE;
         xrInstance = XR_NULL_HANDLE;
@@ -863,7 +876,8 @@ bool VulkanStereoRenderer::Initialize(
     XrInstance xrInstance,
     const XrSessionContext& xrSession,
     const VulkanDeviceContext& deviceContext,
-    VulkanSceneProvider* sceneProvider) {
+    VulkanSceneProvider* sceneProvider,
+    const VulkanRendererOptions& options) {
     if (impl_->initialized) {
         return true;
     }
@@ -871,7 +885,8 @@ bool VulkanStereoRenderer::Initialize(
             xrInstance,
             xrSession,
             deviceContext,
-            sceneProvider)) {
+            sceneProvider,
+            options)) {
         impl_->Shutdown();
         return false;
     }
