@@ -2,7 +2,26 @@
 
 #include <openxr/openxr.h>
 
+#include <vector>
+
 namespace questlab {
+
+struct XrFrameRenderInfo {
+    XrTime predictedDisplayTime = 0;
+    XrSpace space = XR_NULL_HANDLE;
+    const XrView* views = nullptr;
+    uint32_t viewCount = 0;
+    XrViewStateFlags viewStateFlags = 0;
+};
+
+class XrFrameRenderer {
+public:
+    virtual ~XrFrameRenderer() = default;
+
+    virtual bool RenderFrame(
+        const XrFrameRenderInfo& frame,
+        const XrCompositionLayerBaseHeader** layer) = 0;
+};
 
 class XrSessionContext {
 public:
@@ -17,12 +36,20 @@ public:
         XrSystemId systemId,
         const void* graphicsBindingChain);
     bool PollEvents();
+    bool PumpFrame(XrFrameRenderer* renderer);
     bool PumpEmptyFrame();
     void RequestExit();
     void Shutdown();
 
     bool IsRunning() const { return running_; }
     bool ShouldExit() const { return shouldExit_; }
+    XrSession Session() const { return session_; }
+    XrSpace LocalSpace() const { return localSpace_; }
+    XrViewConfigurationType ViewConfiguration() const { return viewConfiguration_; }
+    XrEnvironmentBlendMode BlendMode() const { return blendMode_; }
+    const std::vector<XrViewConfigurationView>& ViewConfigurationViews() const {
+        return viewConfigurationViews_;
+    }
 
 private:
     bool HandleSessionStateChanged(const XrEventDataSessionStateChanged& event);
@@ -34,8 +61,11 @@ private:
     XrViewConfigurationType viewConfiguration_ =
         XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
     XrEnvironmentBlendMode blendMode_ = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    std::vector<XrViewConfigurationView> viewConfigurationViews_;
+    std::vector<XrView> views_;
     bool running_ = false;
     bool shouldExit_ = false;
+    bool invalidViewsLogged_ = false;
 };
 
 }  // namespace questlab

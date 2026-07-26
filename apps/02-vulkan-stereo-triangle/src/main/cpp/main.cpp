@@ -1,5 +1,6 @@
 #include <android_native_app_glue.h>
 
+#include "vulkan_renderer/vulkan_stereo_renderer.h"
 #include "xr_core/vulkan_session_binding.h"
 #include "xr_core/xr_error.h"
 #include "xr_core/xr_instance.h"
@@ -35,23 +36,33 @@ void HandleAppCommand(android_app* app, int32_t command) {
 }  // namespace
 
 void android_main(android_app* app) {
-    questlab::SetLogTag("OpenXRBootstrap");
+    questlab::SetLogTag("VulkanStereoTriangle");
     AndroidState androidState;
     app->userData = &androidState;
     app->onAppCmd = HandleAppCommand;
 
-    questlab::LogInfo("OpenXR bootstrap starting");
+    questlab::LogInfo("Vulkan stereo triangle starting");
     questlab::XrInstanceContext xrInstance;
     questlab::VulkanSessionBinding vulkanBinding;
     questlab::XrSessionContext xrSession;
+    questlab::VulkanStereoRenderer renderer;
+
+    questlab::VulkanBindingOptions bindingOptions;
+#if defined(QUEST_ENABLE_VULKAN_VALIDATION)
+    bindingOptions.enableValidation = true;
+#endif
 
     if (!xrInstance.Initialize(app->activity->vm, app->activity->clazz) ||
-        !vulkanBinding.Initialize(xrInstance) ||
+        !vulkanBinding.Initialize(xrInstance, bindingOptions) ||
         !xrSession.Initialize(
             xrInstance.Instance(),
             xrInstance.SystemId(),
-            vulkanBinding.GraphicsBinding())) {
-        questlab::LogError("Bootstrap initialization failed");
+            vulkanBinding.GraphicsBinding()) ||
+        !renderer.Initialize(
+            xrInstance.Instance(),
+            xrSession,
+            vulkanBinding.DeviceContext())) {
+        questlab::LogError("Vulkan stereo triangle initialization failed");
         ANativeActivity_finish(app->activity);
     } else {
         while (!androidState.destroyRequested && !app->destroyRequested &&
@@ -84,10 +95,8 @@ void android_main(android_app* app) {
                 xrSession.RequestExit();
                 break;
             }
-            if (!xrSession.PollEvents()) {
-                break;
-            }
-            if (!xrSession.PumpEmptyFrame()) {
+            if (!xrSession.PollEvents() ||
+                !xrSession.PumpFrame(&renderer)) {
                 break;
             }
         }
@@ -96,8 +105,9 @@ void android_main(android_app* app) {
     if (!androidState.destroyRequested && !app->destroyRequested) {
         ANativeActivity_finish(app->activity);
     }
+    renderer.Shutdown();
     xrSession.Shutdown();
     vulkanBinding.Shutdown();
     xrInstance.Shutdown();
-    questlab::LogInfo("OpenXR bootstrap stopped cleanly");
+    questlab::LogInfo("Vulkan stereo triangle stopped cleanly");
 }

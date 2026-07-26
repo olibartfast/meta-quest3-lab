@@ -141,6 +141,9 @@ The application launches on Quest 3, enters an active OpenXR session, logs lifec
 
 # Milestone 2 — Vulkan Stereo Rendering
 
+**Status:** Implemented; Quest 3/3S acceptance is pending. Do not mark complete
+until the documented visual, lifecycle, validation, and regression checks pass.
+
 ## Goal
 
 Render repository-owned graphics correctly in both eyes using OpenXR swapchains and Vulkan.

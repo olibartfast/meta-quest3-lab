@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(openxr_bootstrap LANGUAGES C CXX)
+project(vulkan_stereo_triangle LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -10,6 +10,10 @@ add_subdirectory(
     ../../libs/xr_core
     "${CMAKE_CURRENT_BINARY_DIR}/xr_core"
 )
+add_subdirectory(
+    ../../libs/vulkan_renderer
+    "${CMAKE_CURRENT_BINARY_DIR}/vulkan_renderer"
+)
 
 set(native_app_glue_dir "${ANDROID_NDK}/sources/android/native_app_glue")
 add_library(android_native_app_glue STATIC
@@ -17,22 +21,31 @@ add_library(android_native_app_glue STATIC
 )
 target_include_directories(android_native_app_glue PUBLIC "${native_app_glue_dir}")
 
-add_library(openxr_bootstrap SHARED
+add_library(vulkan_stereo_triangle SHARED
     src/main/cpp/main.cpp
 )
-target_compile_definitions(openxr_bootstrap PRIVATE
+
+target_compile_definitions(vulkan_stereo_triangle PRIVATE
     XR_USE_GRAPHICS_API_VULKAN
     XR_USE_PLATFORM_ANDROID
 )
-target_compile_options(openxr_bootstrap PRIVATE
+if(QUEST_ENABLE_VULKAN_VALIDATION)
+    target_compile_definitions(vulkan_stereo_triangle PRIVATE
+        QUEST_ENABLE_VULKAN_VALIDATION=1
+    )
+endif()
+
+target_compile_options(vulkan_stereo_triangle PRIVATE
     -Wall
     -Wextra
     -Wpedantic
     -Wno-missing-field-initializers
 )
-target_link_libraries(openxr_bootstrap PRIVATE
-    xr_core
+
+target_link_libraries(vulkan_stereo_triangle PRIVATE
+    vulkan_renderer
     android_native_app_glue
     android
 )
-target_link_options(openxr_bootstrap PRIVATE "-uANativeActivity_onCreate")
+
+target_link_options(vulkan_stereo_triangle PRIVATE "-uANativeActivity_onCreate")

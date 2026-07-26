@@ -9,6 +9,7 @@ source "$script_dir/toolchain_config.sh"
 
 app=""
 build_only=false
+vulkan_validation=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --app)
@@ -23,9 +24,13 @@ while [[ $# -gt 0 ]]; do
             build_only=true
             shift
             ;;
+        --vulkan-validation)
+            vulkan_validation=true
+            shift
+            ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --app {01-openxr-bootstrap|xrpassthrough} [--build-only]" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
             exit 2
             ;;
     esac
@@ -33,7 +38,7 @@ done
 
 if [[ -z "$app" ]]; then
     echo "Select an application with --app." >&2
-    echo "Usage: $0 --app {01-openxr-bootstrap|xrpassthrough} [--build-only]" >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
     exit 2
 fi
 
@@ -48,6 +53,19 @@ case "$app" in
         activity="android.app.NativeActivity"
         log_tag="OpenXRBootstrap"
         ;;
+    02-vulkan-stereo-triangle)
+        build_command=(
+            "$repo_root/gradlew"
+            ":apps:02-vulkan-stereo-triangle:assembleDebug"
+        )
+        if [[ "$vulkan_validation" == true ]]; then
+            build_command+=("-PquestVulkanValidation=true")
+        fi
+        apk_path="$repo_root/apps/02-vulkan-stereo-triangle/build/outputs/apk/debug/02-vulkan-stereo-triangle-debug.apk"
+        application_id="com.olibartfast.questlab.vulkanstereotriangle"
+        activity="android.app.NativeActivity"
+        log_tag="VulkanStereoTriangle"
+        ;;
     xrpassthrough)
         build_command=("$repo_root/XrPassthrough/Projects/Android/gradlew" assembleDebug)
         build_directory="$repo_root/XrPassthrough/Projects/Android"
@@ -58,10 +76,16 @@ case "$app" in
         ;;
     *)
         echo "Unknown application: $app" >&2
-        echo "Available applications: 01-openxr-bootstrap, xrpassthrough" >&2
+        echo "Available applications: 01-openxr-bootstrap, 02-vulkan-stereo-triangle, xrpassthrough" >&2
         exit 2
         ;;
 esac
+
+if [[ "$vulkan_validation" == true &&
+      "$app" != "02-vulkan-stereo-triangle" ]]; then
+    echo "--vulkan-validation is supported only by 02-vulkan-stereo-triangle." >&2
+    exit 2
+fi
 
 echo "Building $app with Android SDK: $ANDROID_HOME"
 if [[ -n "${build_directory:-}" ]]; then

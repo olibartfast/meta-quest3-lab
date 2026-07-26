@@ -38,6 +38,7 @@ jobs:
             settings.gradle
             gradle.properties
             apps/01-openxr-bootstrap/build.gradle
+            apps/02-vulkan-stereo-triangle/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -72,6 +73,9 @@ jobs:
       - name: Build OpenXR bootstrap
         run: ./scripts/build_deploy.sh --app 01-openxr-bootstrap --build-only
 
+      - name: Build Vulkan stereo triangle
+        run: ./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle --build-only
+
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
 
@@ -81,6 +85,7 @@ jobs:
           name: android-debug-apks
           path: |
             apps/01-openxr-bootstrap/build/outputs/apk/debug/01-openxr-bootstrap-debug.apk
+            apps/02-vulkan-stereo-triangle/build/outputs/apk/debug/02-vulkan-stereo-triangle-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14
