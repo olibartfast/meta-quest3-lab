@@ -39,6 +39,7 @@ jobs:
             gradle.properties
             apps/01-openxr-bootstrap/build.gradle
             apps/02-vulkan-stereo-triangle/build.gradle
+            apps/03-head-pose/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -70,11 +71,20 @@ jobs:
       - name: Verify pinned toolchain
         run: ./scripts/print_toolchain_config.sh --strict
 
+      - name: Test XR math
+        run: |
+          cmake -S libs/xr_math -B build/xr-math-tests -DBUILD_TESTING=ON
+          cmake --build build/xr-math-tests --parallel
+          ctest --test-dir build/xr-math-tests --output-on-failure
+
       - name: Build OpenXR bootstrap
         run: ./scripts/build_deploy.sh --app 01-openxr-bootstrap --build-only
 
       - name: Build Vulkan stereo triangle
         run: ./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle --build-only
+
+      - name: Build head pose and coordinate spaces
+        run: ./scripts/build_deploy.sh --app 03-head-pose --build-only
 
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
@@ -86,6 +96,7 @@ jobs:
           path: |
             apps/01-openxr-bootstrap/build/outputs/apk/debug/01-openxr-bootstrap-debug.apk
             apps/02-vulkan-stereo-triangle/build/outputs/apk/debug/02-vulkan-stereo-triangle-debug.apk
+            apps/03-head-pose/build/outputs/apk/debug/03-head-pose-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14

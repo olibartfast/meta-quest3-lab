@@ -180,6 +180,9 @@ A stable stereoscopic object is visible in the headset with correct per-eye proj
 
 # Milestone 3 — Tracking and Coordinate Systems
 
+**Status:** In progress; implementation requires host, CI, and Quest 3/3S
+acceptance before completion.
+
 ## Goal
 
 Understand and expose the spatial foundations required for XR and computer-vision integration.

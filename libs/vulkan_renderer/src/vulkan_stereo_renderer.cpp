@@ -1,11 +1,11 @@
 #include "vulkan_renderer/vulkan_stereo_renderer.h"
 
 #include "xr_core/xr_error.h"
+#include "xr_math/openxr_conversions.h"
 
 #include <openxr/openxr_platform.h>
 
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -13,102 +13,6 @@
 
 namespace questlab {
 namespace {
-
-struct Matrix4 {
-    std::array<float, 16> values{};
-};
-
-Matrix4 Identity() {
-    Matrix4 matrix;
-    matrix.values[0] = 1.0F;
-    matrix.values[5] = 1.0F;
-    matrix.values[10] = 1.0F;
-    matrix.values[15] = 1.0F;
-    return matrix;
-}
-
-Matrix4 Multiply(const Matrix4& left, const Matrix4& right) {
-    Matrix4 result;
-    for (uint32_t column = 0; column < 4; ++column) {
-        for (uint32_t row = 0; row < 4; ++row) {
-            float value = 0.0F;
-            for (uint32_t element = 0; element < 4; ++element) {
-                value +=
-                    left.values[element * 4 + row] *
-                    right.values[column * 4 + element];
-            }
-            result.values[column * 4 + row] = value;
-        }
-    }
-    return result;
-}
-
-Matrix4 Translation(float x, float y, float z) {
-    Matrix4 matrix = Identity();
-    matrix.values[12] = x;
-    matrix.values[13] = y;
-    matrix.values[14] = z;
-    return matrix;
-}
-
-Matrix4 Rotation(const XrQuaternionf& quaternion) {
-    const float xx = quaternion.x * quaternion.x;
-    const float yy = quaternion.y * quaternion.y;
-    const float zz = quaternion.z * quaternion.z;
-    const float xy = quaternion.x * quaternion.y;
-    const float xz = quaternion.x * quaternion.z;
-    const float yz = quaternion.y * quaternion.z;
-    const float wx = quaternion.w * quaternion.x;
-    const float wy = quaternion.w * quaternion.y;
-    const float wz = quaternion.w * quaternion.z;
-
-    Matrix4 matrix = Identity();
-    matrix.values[0] = 1.0F - 2.0F * (yy + zz);
-    matrix.values[1] = 2.0F * (xy + wz);
-    matrix.values[2] = 2.0F * (xz - wy);
-    matrix.values[4] = 2.0F * (xy - wz);
-    matrix.values[5] = 1.0F - 2.0F * (xx + zz);
-    matrix.values[6] = 2.0F * (yz + wx);
-    matrix.values[8] = 2.0F * (xz + wy);
-    matrix.values[9] = 2.0F * (yz - wx);
-    matrix.values[10] = 1.0F - 2.0F * (xx + yy);
-    return matrix;
-}
-
-Matrix4 ViewFromPose(const XrPosef& pose) {
-    XrQuaternionf inverseOrientation{
-        -pose.orientation.x,
-        -pose.orientation.y,
-        -pose.orientation.z,
-        pose.orientation.w,
-    };
-    return Multiply(
-        Rotation(inverseOrientation),
-        Translation(-pose.position.x, -pose.position.y, -pose.position.z));
-}
-
-Matrix4 ProjectionFromFov(
-    const XrFovf& fov,
-    float nearDistance,
-    float farDistance) {
-    const float tanLeft = std::tan(fov.angleLeft);
-    const float tanRight = std::tan(fov.angleRight);
-    const float tanDown = std::tan(fov.angleDown);
-    const float tanUp = std::tan(fov.angleUp);
-    const float tanWidth = tanRight - tanLeft;
-    const float tanHeight = tanUp - tanDown;
-
-    Matrix4 matrix;
-    matrix.values[0] = 2.0F / tanWidth;
-    matrix.values[5] = 2.0F / tanHeight;
-    matrix.values[8] = (tanRight + tanLeft) / tanWidth;
-    matrix.values[9] = (tanUp + tanDown) / tanHeight;
-    matrix.values[10] = -farDistance / (farDistance - nearDistance);
-    matrix.values[11] = -1.0F;
-    matrix.values[14] =
-        -(farDistance * nearDistance) / (farDistance - nearDistance);
-    return matrix;
-}
 
 VkFormat SelectSwapchainFormat(const std::vector<int64_t>& formats) {
     constexpr std::array<VkFormat, 4> kPreferences = {
@@ -127,13 +31,23 @@ VkFormat SelectSwapchainFormat(const std::vector<int64_t>& formats) {
     return VK_FORMAT_UNDEFINED;
 }
 
-constexpr uint32_t kVertexShader[] =
+constexpr uint32_t kTriangleVertexShader[] =
 #include "triangle.vert.inc"
 ;
 
 constexpr uint32_t kFragmentShader[] =
 #include "triangle.frag.inc"
 ;
+
+constexpr uint32_t kDebugLineVertexShader[] =
+#include "debug_lines.vert.inc"
+;
+
+struct DebugPushConstants {
+    math::Mat4 modelViewProjection;
+    int32_t shape = 0;
+    std::array<int32_t, 3> padding{};
+};
 
 }  // namespace
 
@@ -160,7 +74,10 @@ struct VulkanStereoRenderer::Impl {
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkPipeline trianglePipeline = VK_NULL_HANDLE;
+    VkPipeline debugLinePipeline = VK_NULL_HANDLE;
+    VulkanSceneProvider* sceneProvider = nullptr;
+    std::vector<DebugLineDraw> frameDraws;
     std::array<EyeSwapchain, 2> eyes;
     std::array<XrCompositionLayerProjectionView, 2> projectionViews = {
         XrCompositionLayerProjectionView{
@@ -360,18 +277,28 @@ struct VulkanStereoRenderer::Impl {
     }
 
     bool CreatePipeline() {
-        VkShaderModule vertexModule = VK_NULL_HANDLE;
+        VkShaderModule triangleVertexModule = VK_NULL_HANDLE;
+        VkShaderModule debugLineVertexModule = VK_NULL_HANDLE;
         VkShaderModule fragmentModule = VK_NULL_HANDLE;
         if (!CreateShaderModule(
-                kVertexShader,
-                sizeof(kVertexShader),
-                &vertexModule) ||
+                kTriangleVertexShader,
+                sizeof(kTriangleVertexShader),
+                &triangleVertexModule) ||
+            !CreateShaderModule(
+                kDebugLineVertexShader,
+                sizeof(kDebugLineVertexShader),
+                &debugLineVertexModule) ||
             !CreateShaderModule(
                 kFragmentShader,
                 sizeof(kFragmentShader),
                 &fragmentModule)) {
-            if (vertexModule != VK_NULL_HANDLE) {
-                vkDestroyShaderModule(context.device, vertexModule, nullptr);
+            if (triangleVertexModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(
+                    context.device, triangleVertexModule, nullptr);
+            }
+            if (debugLineVertexModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(
+                    context.device, debugLineVertexModule, nullptr);
             }
             if (fragmentModule != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(context.device, fragmentModule, nullptr);
@@ -379,13 +306,13 @@ struct VulkanStereoRenderer::Impl {
             return false;
         }
 
-        const std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {{
+        std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages = {{
             {
                 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 nullptr,
                 0,
                 VK_SHADER_STAGE_VERTEX_BIT,
-                vertexModule,
+                triangleVertexModule,
                 "main",
                 nullptr,
             },
@@ -402,7 +329,7 @@ struct VulkanStereoRenderer::Impl {
 
         VkPushConstantRange pushConstantRange{};
         pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushConstantRange.size = sizeof(Matrix4);
+        pushConstantRange.size = sizeof(DebugPushConstants);
         VkPipelineLayoutCreateInfo layoutCreateInfo{
             VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layoutCreateInfo.pushConstantRangeCount = 1;
@@ -476,12 +403,28 @@ struct VulkanStereoRenderer::Impl {
                     1,
                     &pipelineCreateInfo,
                     nullptr,
-                    &pipeline),
-                "vkCreateGraphicsPipelines");
+                    &trianglePipeline),
+                "vkCreateGraphicsPipelines(triangle)");
+        }
+        if (succeeded) {
+            shaderStages[0].module = debugLineVertexModule;
+            inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+            succeeded = CheckVk(
+                vkCreateGraphicsPipelines(
+                    context.device,
+                    VK_NULL_HANDLE,
+                    1,
+                    &pipelineCreateInfo,
+                    nullptr,
+                    &debugLinePipeline),
+                "vkCreateGraphicsPipelines(debug lines)");
         }
 
         vkDestroyShaderModule(context.device, fragmentModule, nullptr);
-        vkDestroyShaderModule(context.device, vertexModule, nullptr);
+        vkDestroyShaderModule(
+            context.device, debugLineVertexModule, nullptr);
+        vkDestroyShaderModule(
+            context.device, triangleVertexModule, nullptr);
         return succeeded;
     }
 
@@ -563,10 +506,12 @@ struct VulkanStereoRenderer::Impl {
     bool Initialize(
         XrInstance instance,
         const XrSessionContext& session,
-        const VulkanDeviceContext& deviceContext) {
+        const VulkanDeviceContext& deviceContext,
+        VulkanSceneProvider* provider) {
         xrInstance = instance;
         xrSession = session.Session();
         context = deviceContext;
+        sceneProvider = provider;
         const std::vector<XrViewConfigurationView>& configurations =
             session.ViewConfigurationViews();
         if (xrInstance == XR_NULL_HANDLE ||
@@ -593,7 +538,7 @@ struct VulkanStereoRenderer::Impl {
     bool RecordAndSubmit(
         uint32_t eyeIndex,
         uint32_t imageIndex,
-        const Matrix4& modelViewProjection) {
+        const math::Mat4& viewProjection) {
         EyeSwapchain& eye = eyes[eyeIndex];
         ImageResources& resource = eye.resources[imageIndex];
         if (!CheckVk(
@@ -635,11 +580,6 @@ struct VulkanStereoRenderer::Impl {
             resource.commandBuffer,
             &renderPassBegin,
             VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(
-            resource.commandBuffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS,
-            pipeline);
-
         VkViewport viewport{};
         viewport.x = 0.0F;
         viewport.y = static_cast<float>(eye.height);
@@ -651,14 +591,50 @@ struct VulkanStereoRenderer::Impl {
         VkRect2D scissor{};
         scissor.extent = {eye.width, eye.height};
         vkCmdSetScissor(resource.commandBuffer, 0, 1, &scissor);
-        vkCmdPushConstants(
-            resource.commandBuffer,
-            pipelineLayout,
-            VK_SHADER_STAGE_VERTEX_BIT,
-            0,
-            sizeof(Matrix4),
-            modelViewProjection.values.data());
-        vkCmdDraw(resource.commandBuffer, 3, 1, 0, 0);
+        if (sceneProvider == nullptr) {
+            const math::Mat4 model = math::TranslationMatrix(
+                {0.0F, 0.0F, -2.0F});
+            const math::Mat4 modelViewProjection =
+                math::Multiply(viewProjection, model);
+            vkCmdBindPipeline(
+                resource.commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                trianglePipeline);
+            vkCmdPushConstants(
+                resource.commandBuffer,
+                pipelineLayout,
+                VK_SHADER_STAGE_VERTEX_BIT,
+                0,
+                sizeof(math::Mat4),
+                modelViewProjection.values.data());
+            vkCmdDraw(resource.commandBuffer, 3, 1, 0, 0);
+        } else {
+            vkCmdBindPipeline(
+                resource.commandBuffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                debugLinePipeline);
+            for (const DebugLineDraw& draw : frameDraws) {
+                DebugPushConstants pushConstants;
+                pushConstants.modelViewProjection =
+                    math::Multiply(viewProjection, draw.model);
+                pushConstants.shape = static_cast<int32_t>(draw.shape);
+                vkCmdPushConstants(
+                    resource.commandBuffer,
+                    pipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT,
+                    0,
+                    sizeof(pushConstants),
+                    &pushConstants);
+                const uint32_t vertexCount =
+                    draw.shape == DebugLineShape::Axes ? 6U : 8U;
+                vkCmdDraw(
+                    resource.commandBuffer,
+                    vertexCount,
+                    1,
+                    0,
+                    0);
+            }
+        }
         vkCmdEndRenderPass(resource.commandBuffer);
         if (!CheckVk(
                 vkEndCommandBuffer(resource.commandBuffer),
@@ -724,14 +700,14 @@ struct VulkanStereoRenderer::Impl {
         } else {
             constexpr float kNearDistance = 0.05F;
             constexpr float kFarDistance = 100.0F;
-            const Matrix4 model = Translation(0.0F, 0.0F, -2.0F);
-            const Matrix4 viewMatrix = ViewFromPose(view.pose);
-            const Matrix4 projection = ProjectionFromFov(
+            const math::Mat4 viewMatrix = math::PoseMatrix(
+                math::InverseRigid(math::FromXr(view.pose)));
+            const math::Mat4 projection = math::VulkanProjectionFromFov(
                 view.fov, kNearDistance, kFarDistance);
-            const Matrix4 modelViewProjection =
-                Multiply(projection, Multiply(viewMatrix, model));
+            const math::Mat4 viewProjection =
+                math::Multiply(projection, viewMatrix);
             rendered = RecordAndSubmit(
-                eyeIndex, imageIndex, modelViewProjection);
+                eyeIndex, imageIndex, viewProjection);
         }
 
         XrSwapchainImageReleaseInfo releaseInfo{
@@ -766,6 +742,12 @@ struct VulkanStereoRenderer::Impl {
             return false;
         }
         *layer = nullptr;
+        frameDraws.clear();
+        if (sceneProvider != nullptr &&
+            !sceneProvider->BuildScene(frame, &frameDraws)) {
+            LogError("Vulkan scene provider failed");
+            return false;
+        }
         for (uint32_t eyeIndex = 0; eyeIndex < eyes.size(); ++eyeIndex) {
             if (!RenderEye(
                     eyeIndex,
@@ -823,9 +805,15 @@ struct VulkanStereoRenderer::Impl {
             }
         }
         if (context.device != VK_NULL_HANDLE) {
-            if (pipeline != VK_NULL_HANDLE) {
-                vkDestroyPipeline(context.device, pipeline, nullptr);
-                pipeline = VK_NULL_HANDLE;
+            if (debugLinePipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(
+                    context.device, debugLinePipeline, nullptr);
+                debugLinePipeline = VK_NULL_HANDLE;
+            }
+            if (trianglePipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(
+                    context.device, trianglePipeline, nullptr);
+                trianglePipeline = VK_NULL_HANDLE;
             }
             if (pipelineLayout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(
@@ -844,6 +832,8 @@ struct VulkanStereoRenderer::Impl {
         }
         initialized = false;
         colorFormat = VK_FORMAT_UNDEFINED;
+        frameDraws.clear();
+        sceneProvider = nullptr;
         context = {};
         xrSession = XR_NULL_HANDLE;
         xrInstance = XR_NULL_HANDLE;
@@ -860,11 +850,16 @@ VulkanStereoRenderer::~VulkanStereoRenderer() {
 bool VulkanStereoRenderer::Initialize(
     XrInstance xrInstance,
     const XrSessionContext& xrSession,
-    const VulkanDeviceContext& deviceContext) {
+    const VulkanDeviceContext& deviceContext,
+    VulkanSceneProvider* sceneProvider) {
     if (impl_->initialized) {
         return true;
     }
-    if (!impl_->Initialize(xrInstance, xrSession, deviceContext)) {
+    if (!impl_->Initialize(
+            xrInstance,
+            xrSession,
+            deviceContext,
+            sceneProvider)) {
         impl_->Shutdown();
         return false;
     }

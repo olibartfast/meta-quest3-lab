@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 rootProject.name = "MetaQuest3Lab"
 include(":apps:01-openxr-bootstrap")
 include(":apps:02-vulkan-stereo-triangle")
+include(":apps:03-head-pose")

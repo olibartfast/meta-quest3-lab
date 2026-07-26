@@ -33,6 +33,15 @@ const char* BlendModeName(XrEnvironmentBlendMode mode) {
     }
 }
 
+const char* ReferenceSpaceName(XrReferenceSpaceType type) {
+    switch (type) {
+        case XR_REFERENCE_SPACE_TYPE_VIEW: return "VIEW";
+        case XR_REFERENCE_SPACE_TYPE_LOCAL: return "LOCAL";
+        case XR_REFERENCE_SPACE_TYPE_STAGE: return "STAGE";
+        default: return "OTHER";
+    }
+}
+
 }  // namespace
 
 XrSessionContext::~XrSessionContext() {
@@ -175,6 +184,42 @@ bool XrSessionContext::Initialize(
     }
     LogInfo("OpenXR session created");
 
+    if (!CreateReferenceSpaces()) {
+        Shutdown();
+        return false;
+    }
+    return true;
+}
+
+bool XrSessionContext::CreateReferenceSpaces() {
+    uint32_t typeCount = 0;
+    if (!CheckXr(
+            instance_,
+            xrEnumerateReferenceSpaces(
+                session_, 0, &typeCount, nullptr),
+            "xrEnumerateReferenceSpaces(count)")) {
+        return false;
+    }
+    std::vector<XrReferenceSpaceType> types(typeCount);
+    if (!CheckXr(
+            instance_,
+            xrEnumerateReferenceSpaces(
+                session_, typeCount, &typeCount, types.data()),
+            "xrEnumerateReferenceSpaces(list)")) {
+        return false;
+    }
+    for (XrReferenceSpaceType type : types) {
+        LogInfo("Reference space supported: %s", ReferenceSpaceName(type));
+    }
+    const auto supports = [&types](XrReferenceSpaceType type) {
+        return std::find(types.begin(), types.end(), type) != types.end();
+    };
+    if (!supports(XR_REFERENCE_SPACE_TYPE_VIEW) ||
+        !supports(XR_REFERENCE_SPACE_TYPE_LOCAL)) {
+        LogError("Runtime must support both VIEW and LOCAL reference spaces");
+        return false;
+    }
+
     XrReferenceSpaceCreateInfo spaceCreateInfo{
         XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
     spaceCreateInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
@@ -183,10 +228,50 @@ bool XrSessionContext::Initialize(
             instance_,
             xrCreateReferenceSpace(session_, &spaceCreateInfo, &localSpace_),
             "xrCreateReferenceSpace(LOCAL)")) {
-        Shutdown();
         return false;
     }
     LogInfo("LOCAL reference space created");
+
+    spaceCreateInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    if (!CheckXr(
+            instance_,
+            xrCreateReferenceSpace(session_, &spaceCreateInfo, &viewSpace_),
+            "xrCreateReferenceSpace(VIEW)")) {
+        return false;
+    }
+    LogInfo("VIEW reference space created");
+
+    if (!supports(XR_REFERENCE_SPACE_TYPE_STAGE)) {
+        LogInfo("STAGE reference space is unavailable");
+        return true;
+    }
+    spaceCreateInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+    if (!CheckXr(
+            instance_,
+            xrCreateReferenceSpace(session_, &spaceCreateInfo, &stageSpace_),
+            "xrCreateReferenceSpace(STAGE)")) {
+        return false;
+    }
+    LogInfo("STAGE reference space created");
+
+    const XrResult boundsResult = xrGetReferenceSpaceBoundsRect(
+        session_,
+        XR_REFERENCE_SPACE_TYPE_STAGE,
+        &stageBounds_);
+    if (boundsResult == XR_SPACE_BOUNDS_UNAVAILABLE) {
+        LogInfo("STAGE bounds are unavailable");
+    } else if (!CheckXr(
+            instance_,
+            boundsResult,
+            "xrGetReferenceSpaceBoundsRect(STAGE)")) {
+        return false;
+    } else {
+        stageBoundsAvailable_ = true;
+        LogInfo(
+            "STAGE bounds: %.3f x %.3f metres",
+            stageBounds_.width,
+            stageBounds_.height);
+    }
     return true;
 }
 
@@ -217,6 +302,16 @@ bool XrSessionContext::PollEvents() {
                 const auto* lost =
                     reinterpret_cast<const XrEventDataEventsLost*>(&event);
                 LogError("OpenXR runtime reported %u lost events", lost->lostEventCount);
+                break;
+            }
+            case XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING: {
+                const auto* change =
+                    reinterpret_cast<
+                        const XrEventDataReferenceSpaceChangePending*>(&event);
+                LogInfo(
+                    "%s reference space change pending at time %lld",
+                    ReferenceSpaceName(change->referenceSpaceType),
+                    static_cast<long long>(change->changeTime));
                 break;
             }
             default:
@@ -263,6 +358,38 @@ bool XrSessionContext::HandleSessionStateChanged(
         state_ == XR_SESSION_STATE_EXITING ||
         state_ == XR_SESSION_STATE_LOSS_PENDING) {
         shouldExit_ = true;
+    }
+    return true;
+}
+
+bool XrSessionContext::LocateTrackedSpaces(
+    XrTime time,
+    XrFrameRenderInfo* renderInfo) {
+    renderInfo->headInLocal = XrSpaceLocation{XR_TYPE_SPACE_LOCATION};
+    if (!CheckXr(
+            instance_,
+            xrLocateSpace(
+                viewSpace_,
+                localSpace_,
+                time,
+                &renderInfo->headInLocal),
+            "xrLocateSpace(VIEW in LOCAL)")) {
+        return false;
+    }
+    renderInfo->stageAvailable = stageSpace_ != XR_NULL_HANDLE;
+    renderInfo->stageBoundsAvailable = stageBoundsAvailable_;
+    renderInfo->stageBounds = stageBounds_;
+    renderInfo->stageInLocal = XrSpaceLocation{XR_TYPE_SPACE_LOCATION};
+    if (stageSpace_ != XR_NULL_HANDLE &&
+        !CheckXr(
+            instance_,
+            xrLocateSpace(
+                stageSpace_,
+                localSpace_,
+                time,
+                &renderInfo->stageInLocal),
+            "xrLocateSpace(STAGE in LOCAL)")) {
+        return false;
     }
     return true;
 }
@@ -336,7 +463,11 @@ bool XrSessionContext::PumpFrame(XrFrameRenderer* renderer) {
                 renderInfo.views = views_.data();
                 renderInfo.viewCount = viewCount;
                 renderInfo.viewStateFlags = viewState.viewStateFlags;
-                if (!renderer->RenderFrame(renderInfo, &layer)) {
+                if (!LocateTrackedSpaces(
+                        frameState.predictedDisplayTime,
+                        &renderInfo)) {
+                    frameSucceeded = false;
+                } else if (!renderer->RenderFrame(renderInfo, &layer)) {
                     LogError("Frame renderer failed; submitting an empty frame");
                     layer = nullptr;
                     frameSucceeded = false;
@@ -370,6 +501,16 @@ void XrSessionContext::RequestExit() {
 }
 
 void XrSessionContext::Shutdown() {
+    if (stageSpace_ != XR_NULL_HANDLE) {
+        CheckXr(instance_, xrDestroySpace(stageSpace_), "xrDestroySpace(STAGE)");
+        stageSpace_ = XR_NULL_HANDLE;
+        LogInfo("STAGE reference space destroyed");
+    }
+    if (viewSpace_ != XR_NULL_HANDLE) {
+        CheckXr(instance_, xrDestroySpace(viewSpace_), "xrDestroySpace(VIEW)");
+        viewSpace_ = XR_NULL_HANDLE;
+        LogInfo("VIEW reference space destroyed");
+    }
     if (localSpace_ != XR_NULL_HANDLE) {
         CheckXr(instance_, xrDestroySpace(localSpace_), "xrDestroySpace(LOCAL)");
         localSpace_ = XR_NULL_HANDLE;
@@ -389,6 +530,8 @@ void XrSessionContext::Shutdown() {
     viewConfigurationViews_.clear();
     views_.clear();
     invalidViewsLogged_ = false;
+    stageBounds_ = {};
+    stageBoundsAvailable_ = false;
 }
 
 }  // namespace questlab
