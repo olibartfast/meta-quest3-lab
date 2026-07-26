@@ -3,6 +3,8 @@
 #include "xr_core/xr_error.h"
 #include "xr_core/xr_instance.h"
 
+#include <algorithm>
+#include <cstring>
 #include <limits>
 #include <vector>
 
@@ -23,13 +25,56 @@ bool LoadXrFunction(
         name);
 }
 
+bool HasLayer(
+    const std::vector<VkLayerProperties>& layers,
+    const char* name) {
+    return std::any_of(
+        layers.begin(),
+        layers.end(),
+        [name](const VkLayerProperties& layer) {
+            return std::strcmp(layer.layerName, name) == 0;
+        });
+}
+
+bool HasExtension(
+    const std::vector<VkExtensionProperties>& extensions,
+    const char* name) {
+    return std::any_of(
+        extensions.begin(),
+        extensions.end(),
+        [name](const VkExtensionProperties& extension) {
+            return std::strcmp(extension.extensionName, name) == 0;
+        });
+}
+
+VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT,
+    const VkDebugUtilsMessengerCallbackDataEXT* callbackData,
+    void*) {
+    const char* message =
+        callbackData != nullptr && callbackData->pMessage != nullptr
+        ? callbackData->pMessage
+        : "Vulkan validation message without text";
+    if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0) {
+        LogError("Vulkan validation: %s", message);
+    } else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0) {
+        LogWarning("Vulkan validation: %s", message);
+    } else {
+        LogInfo("Vulkan validation: %s", message);
+    }
+    return VK_FALSE;
+}
+
 }  // namespace
 
 VulkanSessionBinding::~VulkanSessionBinding() {
     Shutdown();
 }
 
-bool VulkanSessionBinding::Initialize(const XrInstanceContext& xrContext) {
+bool VulkanSessionBinding::Initialize(
+    const XrInstanceContext& xrContext,
+    VulkanBindingOptions options) {
     if (device_ != VK_NULL_HANDLE) {
         return true;
     }
@@ -83,8 +128,65 @@ bool VulkanSessionBinding::Initialize(const XrInstanceContext& xrContext) {
         return false;
     }
 
+    std::vector<const char*> enabledLayers;
+    std::vector<const char*> enabledExtensions;
+    VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+    if (options.enableValidation) {
+        uint32_t layerCount = 0;
+        if (!CheckVk(
+                vkEnumerateInstanceLayerProperties(&layerCount, nullptr),
+                "vkEnumerateInstanceLayerProperties(count)")) {
+            return false;
+        }
+        std::vector<VkLayerProperties> layers(layerCount);
+        if (!CheckVk(
+                vkEnumerateInstanceLayerProperties(&layerCount, layers.data()),
+                "vkEnumerateInstanceLayerProperties(list)")) {
+            return false;
+        }
+
+        uint32_t extensionCount = 0;
+        if (!CheckVk(
+                vkEnumerateInstanceExtensionProperties(
+                    nullptr, &extensionCount, nullptr),
+                "vkEnumerateInstanceExtensionProperties(count)")) {
+            return false;
+        }
+        std::vector<VkExtensionProperties> extensions(extensionCount);
+        if (!CheckVk(
+                vkEnumerateInstanceExtensionProperties(
+                    nullptr, &extensionCount, extensions.data()),
+                "vkEnumerateInstanceExtensionProperties(list)")) {
+            return false;
+        }
+
+        constexpr const char* kValidationLayer =
+            "VK_LAYER_KHRONOS_validation";
+        if (HasLayer(layers, kValidationLayer) &&
+            HasExtension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) {
+            enabledLayers.push_back(kValidationLayer);
+            enabledExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            debugCreateInfo.messageSeverity =
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+            debugCreateInfo.messageType =
+                VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+            debugCreateInfo.pfnUserCallback = DebugCallback;
+            LogInfo("Vulkan validation requested and available");
+        } else {
+            LogWarning(
+                "Vulkan validation requested but the layer or debug-utils "
+                "extension is unavailable; continuing without validation");
+        }
+    }
+
     VkApplicationInfo applicationInfo{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    applicationInfo.pApplicationName = "OpenXR Bootstrap";
+    applicationInfo.pApplicationName = "QuestLab Native XR";
     applicationInfo.applicationVersion = 1;
     applicationInfo.pEngineName = "questlab";
     applicationInfo.engineVersion = 1;
@@ -92,6 +194,15 @@ bool VulkanSessionBinding::Initialize(const XrInstanceContext& xrContext) {
 
     VkInstanceCreateInfo instanceCreateInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     instanceCreateInfo.pApplicationInfo = &applicationInfo;
+    instanceCreateInfo.enabledLayerCount =
+        static_cast<uint32_t>(enabledLayers.size());
+    instanceCreateInfo.ppEnabledLayerNames = enabledLayers.data();
+    instanceCreateInfo.enabledExtensionCount =
+        static_cast<uint32_t>(enabledExtensions.size());
+    instanceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
+    if (!enabledLayers.empty()) {
+        instanceCreateInfo.pNext = &debugCreateInfo;
+    }
     XrVulkanInstanceCreateInfoKHR xrInstanceCreateInfo{
         XR_TYPE_VULKAN_INSTANCE_CREATE_INFO_KHR};
     xrInstanceCreateInfo.systemId = xrContext.SystemId();
@@ -110,6 +221,24 @@ bool VulkanSessionBinding::Initialize(const XrInstanceContext& xrContext) {
         !CheckVk(vkResult, "vkCreateInstance (via OpenXR)")) {
         Shutdown();
         return false;
+    }
+
+    if (!enabledLayers.empty()) {
+        const auto createDebugMessenger =
+            reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(
+                    instance_, "vkCreateDebugUtilsMessengerEXT"));
+        if (createDebugMessenger == nullptr ||
+            !CheckVk(
+                createDebugMessenger(
+                    instance_,
+                    &debugCreateInfo,
+                    nullptr,
+                    &debugMessenger_),
+                "vkCreateDebugUtilsMessengerEXT")) {
+            Shutdown();
+            return false;
+        }
     }
 
     XrVulkanGraphicsDeviceGetInfoKHR deviceGetInfo{
@@ -194,11 +323,17 @@ bool VulkanSessionBinding::Initialize(const XrInstanceContext& xrContext) {
     binding_.device = device_;
     binding_.queueFamilyIndex = queueFamilyIndex_;
     binding_.queueIndex = 0;
+    context_.instance = instance_;
+    context_.physicalDevice = physicalDevice_;
+    context_.device = device_;
+    context_.queue = queue_;
+    context_.queueFamilyIndex = queueFamilyIndex_;
     LogInfo("Minimal Vulkan device and graphics queue created");
     return true;
 }
 
 void VulkanSessionBinding::Shutdown() {
+    context_ = {};
     binding_.instance = VK_NULL_HANDLE;
     binding_.physicalDevice = VK_NULL_HANDLE;
     binding_.device = VK_NULL_HANDLE;
@@ -209,6 +344,17 @@ void VulkanSessionBinding::Shutdown() {
         LogInfo("Vulkan device destroyed");
     }
     physicalDevice_ = VK_NULL_HANDLE;
+    if (debugMessenger_ != VK_NULL_HANDLE && instance_ != VK_NULL_HANDLE) {
+        const auto destroyDebugMessenger =
+            reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+                vkGetInstanceProcAddr(
+                    instance_, "vkDestroyDebugUtilsMessengerEXT"));
+        if (destroyDebugMessenger != nullptr) {
+            destroyDebugMessenger(instance_, debugMessenger_, nullptr);
+        }
+        debugMessenger_ = VK_NULL_HANDLE;
+        LogInfo("Vulkan debug messenger destroyed");
+    }
     if (instance_ != VK_NULL_HANDLE) {
         vkDestroyInstance(instance_, nullptr);
         instance_ = VK_NULL_HANDLE;

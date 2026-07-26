@@ -10,7 +10,9 @@ namespace questlab {
 std::string XrResultName(XrInstance instance, XrResult result);
 bool CheckXr(XrInstance instance, XrResult result, const char* operation);
 bool CheckVk(VkResult result, const char* operation);
+void SetLogTag(const char* tag);
 void LogInfo(const char* format, ...);
+void LogWarning(const char* format, ...);
 void LogError(const char* format, ...);
 
 }  // namespace questlab

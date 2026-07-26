@@ -8,10 +8,10 @@
 namespace questlab {
 namespace {
 
-constexpr const char* kLogTag = "OpenXRBootstrap";
+char logTag[64] = "OpenXRBootstrap";
 
 void Log(int priority, const char* format, va_list arguments) {
-    __android_log_vprint(priority, kLogTag, format, arguments);
+    __android_log_vprint(priority, logTag, format, arguments);
 }
 
 }  // namespace
@@ -42,10 +42,24 @@ bool CheckVk(VkResult result, const char* operation) {
     return false;
 }
 
+void SetLogTag(const char* tag) {
+    if (tag == nullptr || tag[0] == '\0') {
+        return;
+    }
+    std::snprintf(logTag, sizeof(logTag), "%s", tag);
+}
+
 void LogInfo(const char* format, ...) {
     va_list arguments;
     va_start(arguments, format);
     Log(ANDROID_LOG_INFO, format, arguments);
+    va_end(arguments);
+}
+
+void LogWarning(const char* format, ...) {
+    va_list arguments;
+    va_start(arguments, format);
+    Log(ANDROID_LOG_WARN, format, arguments);
     va_end(arguments);
 }
 

@@ -2,7 +2,11 @@
 
 ## Current Application
 
-The repository contains two independently selectable Android applications. `XrPassthrough` is the preserved Meta/OpenGL ES baseline. `apps/01-openxr-bootstrap` is the repository-owned, Vulkan-bound Milestone 1 application; it submits empty frames and intentionally renders no content.
+The repository contains three independently selectable Android applications.
+`XrPassthrough` is the preserved Meta/OpenGL ES baseline,
+`apps/01-openxr-bootstrap` is the empty-frame Milestone 1 lifecycle
+application, and `apps/02-vulkan-stereo-triangle` renders the Milestone 2
+stereo scene.
 
 ## Inspect the Toolchain
 
@@ -24,6 +28,7 @@ Use the repository-owned wrapper command:
 
 ```bash
 ./scripts/build_deploy.sh --app 01-openxr-bootstrap --build-only
+./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle --build-only
 ./scripts/build_deploy.sh --app xrpassthrough --build-only
 ```
 
@@ -31,6 +36,7 @@ Application selection is explicit so the legacy baseline remains available. The 
 
 ```text
 apps/01-openxr-bootstrap/build/outputs/apk/debug/01-openxr-bootstrap-debug.apk
+apps/02-vulkan-stereo-triangle/build/outputs/apk/debug/02-vulkan-stereo-triangle-debug.apk
 XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
 ```
 
@@ -40,13 +46,15 @@ Enable Developer Mode and USB debugging on the Quest, connect it over USB, accep
 
 ```bash
 adb devices -l
-./scripts/build_deploy.sh --app 01-openxr-bootstrap
+./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle
 ```
 
-The script builds, installs with `adb install -r`, and launches the selected activity. Keep the headset awake and the controllers active during launch. Inspect bootstrap runtime output with:
+The script builds, installs with `adb install -r`, and launches the selected
+activity. Keep the headset awake and the controllers active during launch.
+Inspect Milestone 2 runtime output with:
 
 ```bash
-adb logcat -s OpenXRBootstrap:V OpenXR:V '*:S'
+adb logcat -s VulkanStereoTriangle:V OpenXR:V '*:S'
 ```
 
 ## Power During Development
@@ -95,7 +103,7 @@ adb devices -l
 This repository's deployment script requires exactly one authorized ADB transport, so disconnect USB before running:
 
 ```bash
-./scripts/build_deploy.sh --app 01-openxr-bootstrap
+./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle
 ```
 
 If a command must be run while both transports are present, select one explicitly:
@@ -125,6 +133,8 @@ Avoid enabling or exposing TCP port 5555 on an untrusted network.
 - **Battery drains over USB:** use the power guidance above, close the XR application between tests, and let the headset cool if its reported temperature remains elevated.
 - **Launch requires controllers:** wake both controllers and put on the headset before launching the NativeActivity.
 - **Black compositor view:** this is expected from `01-openxr-bootstrap`, which submits zero layers in Milestone 1.
+- **No triangle:** confirm the session reached `FOCUSED`, both eye swapchains
+  were created, and no `VulkanStereoTriangle` errors preceded the frame loop.
 - **Toolchain mismatch:** run `./scripts/setup_quest_dev_env.sh`; builds reject versions other than the repository pins.
 
 ## Verified Baseline

@@ -35,6 +35,7 @@ void HandleAppCommand(android_app* app, int32_t command) {
 }  // namespace
 
 void android_main(android_app* app) {
+    questlab::SetLogTag("OpenXRBootstrap");
     AndroidState androidState;
     app->userData = &androidState;
     app->onAppCmd = HandleAppCommand;

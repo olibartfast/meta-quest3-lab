@@ -76,6 +76,51 @@ bool XrSessionContext::Initialize(
         return false;
     }
 
+    uint32_t viewCount = 0;
+    if (!CheckXr(
+            instance_,
+            xrEnumerateViewConfigurationViews(
+                instance_,
+                systemId,
+                viewConfiguration_,
+                0,
+                &viewCount,
+                nullptr),
+            "xrEnumerateViewConfigurationViews(count)")) {
+        return false;
+    }
+    viewConfigurationViews_.assign(
+        viewCount,
+        XrViewConfigurationView{XR_TYPE_VIEW_CONFIGURATION_VIEW});
+    if (!CheckXr(
+            instance_,
+            xrEnumerateViewConfigurationViews(
+                instance_,
+                systemId,
+                viewConfiguration_,
+                viewCount,
+                &viewCount,
+                viewConfigurationViews_.data()),
+            "xrEnumerateViewConfigurationViews(list)")) {
+        viewConfigurationViews_.clear();
+        return false;
+    }
+    if (viewCount != 2) {
+        LogError("PRIMARY_STEREO reported %u views instead of 2", viewCount);
+        viewConfigurationViews_.clear();
+        return false;
+    }
+    views_.assign(viewCount, XrView{XR_TYPE_VIEW});
+    for (uint32_t index = 0; index < viewCount; ++index) {
+        const XrViewConfigurationView& view = viewConfigurationViews_[index];
+        LogInfo(
+            "Stereo view %u: recommended %ux%u, sample count %u",
+            index,
+            view.recommendedImageRectWidth,
+            view.recommendedImageRectHeight,
+            view.recommendedSwapchainSampleCount);
+    }
+
     uint32_t blendModeCount = 0;
     if (!CheckXr(
             instance_,
@@ -222,7 +267,7 @@ bool XrSessionContext::HandleSessionStateChanged(
     return true;
 }
 
-bool XrSessionContext::PumpEmptyFrame() {
+bool XrSessionContext::PumpFrame(XrFrameRenderer* renderer) {
     if (!running_) {
         return true;
     }
@@ -246,19 +291,78 @@ bool XrSessionContext::PumpEmptyFrame() {
         return false;
     }
 
+    bool frameSucceeded = true;
+    const XrCompositionLayerBaseHeader* layer = nullptr;
+    if (frameState.shouldRender == XR_TRUE && renderer != nullptr) {
+        XrViewLocateInfo locateInfo{XR_TYPE_VIEW_LOCATE_INFO};
+        locateInfo.viewConfigurationType = viewConfiguration_;
+        locateInfo.displayTime = frameState.predictedDisplayTime;
+        locateInfo.space = localSpace_;
+        XrViewState viewState{XR_TYPE_VIEW_STATE};
+        uint32_t viewCount = 0;
+        if (!CheckXr(
+                instance_,
+                xrLocateViews(
+                    session_,
+                    &locateInfo,
+                    &viewState,
+                    static_cast<uint32_t>(views_.size()),
+                    &viewCount,
+                    views_.data()),
+                "xrLocateViews")) {
+            frameSucceeded = false;
+        } else if (viewCount != views_.size()) {
+            LogError(
+                "xrLocateViews returned %u views; expected %zu",
+                viewCount,
+                views_.size());
+            frameSucceeded = false;
+        } else {
+            constexpr XrViewStateFlags kRequiredViewFlags =
+                XR_VIEW_STATE_POSITION_VALID_BIT |
+                XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+            if ((viewState.viewStateFlags & kRequiredViewFlags) !=
+                kRequiredViewFlags) {
+                if (!invalidViewsLogged_) {
+                    LogWarning(
+                        "Stereo view poses are not valid; submitting an empty frame");
+                    invalidViewsLogged_ = true;
+                }
+            } else {
+                invalidViewsLogged_ = false;
+                XrFrameRenderInfo renderInfo;
+                renderInfo.predictedDisplayTime = frameState.predictedDisplayTime;
+                renderInfo.space = localSpace_;
+                renderInfo.views = views_.data();
+                renderInfo.viewCount = viewCount;
+                renderInfo.viewStateFlags = viewState.viewStateFlags;
+                if (!renderer->RenderFrame(renderInfo, &layer)) {
+                    LogError("Frame renderer failed; submitting an empty frame");
+                    layer = nullptr;
+                    frameSucceeded = false;
+                }
+            }
+        }
+    }
+
     XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
     endInfo.displayTime = frameState.predictedDisplayTime;
     endInfo.environmentBlendMode = blendMode_;
-    endInfo.layerCount = 0;
-    endInfo.layers = nullptr;
-    if (!CheckXr(
+    endInfo.layerCount = layer == nullptr ? 0U : 1U;
+    endInfo.layers = layer == nullptr ? nullptr : &layer;
+    const bool endSucceeded = CheckXr(
             instance_,
             xrEndFrame(session_, &endInfo),
-            "xrEndFrame(empty)")) {
+            layer == nullptr ? "xrEndFrame(empty)" : "xrEndFrame(projection)");
+    if (!endSucceeded || !frameSucceeded) {
         shouldExit_ = true;
         return false;
     }
     return true;
+}
+
+bool XrSessionContext::PumpEmptyFrame() {
+    return PumpFrame(nullptr);
 }
 
 void XrSessionContext::RequestExit() {
@@ -282,6 +386,9 @@ void XrSessionContext::Shutdown() {
     }
     instance_ = XR_NULL_HANDLE;
     state_ = XR_SESSION_STATE_UNKNOWN;
+    viewConfigurationViews_.clear();
+    views_.clear();
+    invalidViewsLogged_ = false;
 }
 
 }  // namespace questlab

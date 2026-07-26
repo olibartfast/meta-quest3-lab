@@ -2,7 +2,10 @@
 
 ## Project Structure & Module Organization
 
-The main application lives in `XrPassthrough/`. Native C++17 code is under `XrPassthrough/Src/`, public and vendored headers are in `XrPassthrough/Include/`, Android Java glue is in `XrPassthrough/java/`, and packaged resources belong in `XrPassthrough/assets/`. Android build files, the Gradle wrapper, and `AndroidManifest.xml` are in `XrPassthrough/Projects/Android/`. Repository setup and device utilities live in `scripts/`. Keep generated Gradle, CMake, and APK output out of source directories and out of commits.
+Repository-owned examples live in `apps/`, shared native C++17 components live
+in `libs/`, and the preserved legacy baseline lives in `XrPassthrough/`.
+Repository setup and device utilities live in `scripts/`. Keep generated
+Gradle, CMake, shader, and APK output out of source directories and commits.
 
 ## Build, Test, and Development Commands
 
@@ -11,6 +14,8 @@ Run commands from the repository root unless noted:
 - `./scripts/setup_quest_dev_env.sh` installs the expected Android SDK, NDK r29, Java 21, CMake, and Ninja tooling.
 - `./scripts/udev_env_setup.sh` configures Linux USB access for Meta Quest devices.
 - `cd XrPassthrough/Projects/Android && ./gradlew assembleDebug` builds the ARM64 debug APK.
+- `./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle --build-only`
+  builds the repository-owned stereo renderer.
 - `cd XrPassthrough/Projects/Android && ./gradlew clean` removes generated Android build output.
 - `adb install -r XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk` installs the APK on a connected headset.
 - `adb logcat -s XrPassthrough` shows application logs during runtime validation.

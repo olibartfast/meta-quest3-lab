@@ -62,10 +62,12 @@ Configures device connection and debugging:
 ## Build and Deploy
 
 ```bash
-./scripts/build_deploy.sh --app 01-openxr-bootstrap
+./scripts/build_deploy.sh --app 02-vulkan-stereo-triangle
 ```
 
-Builds and deploys the repository-owned OpenXR bootstrap. Use `--app xrpassthrough` to select the preserved legacy baseline, and add `--build-only` to skip ADB deployment.
+Builds and deploys the Vulkan stereo triangle. Use `--app 01-openxr-bootstrap`
+for the empty-frame lifecycle application or `--app xrpassthrough` for the
+preserved legacy baseline. Add `--build-only` to skip ADB deployment.
 
 
 
