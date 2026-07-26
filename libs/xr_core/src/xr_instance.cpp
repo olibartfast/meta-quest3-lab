@@ -96,6 +96,32 @@ bool XrInstanceContext::Initialize(
             return false;
         }
     }
+    std::vector<const char*> enabledExtensions(
+        std::begin(kRequiredExtensions),
+        std::end(kRequiredExtensions));
+    for (const char* additionalExtension : options.additionalExtensions) {
+        if (additionalExtension == nullptr ||
+            additionalExtension[0] == '\0') {
+            LogError("An additional OpenXR extension name is empty");
+            return false;
+        }
+        if (!HasExtension(extensions, additionalExtension)) {
+            LogError(
+                "Required OpenXR extension is unavailable: %s",
+                additionalExtension);
+            return false;
+        }
+        const auto alreadyEnabled = std::find_if(
+            enabledExtensions.begin(),
+            enabledExtensions.end(),
+            [additionalExtension](const char* enabledExtension) {
+                return std::strcmp(
+                    enabledExtension, additionalExtension) == 0;
+            });
+        if (alreadyEnabled == enabledExtensions.end()) {
+            enabledExtensions.push_back(additionalExtension);
+        }
+    }
 
     XrInstanceCreateInfoAndroidKHR androidInfo{
         XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
@@ -120,8 +146,8 @@ bool XrInstanceContext::Initialize(
     createInfo.applicationInfo.engineVersion = 1;
     createInfo.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
     createInfo.enabledExtensionCount =
-        static_cast<uint32_t>(std::size(kRequiredExtensions));
-    createInfo.enabledExtensionNames = kRequiredExtensions;
+        static_cast<uint32_t>(enabledExtensions.size());
+    createInfo.enabledExtensionNames = enabledExtensions.data();
     if (!CheckXr(
             XR_NULL_HANDLE,
             xrCreateInstance(&createInfo, &instance_),

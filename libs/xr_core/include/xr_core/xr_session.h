@@ -1,5 +1,7 @@
 #pragma once
 
+#include "xr_core/passthrough_interface.h"
+
 #include <openxr/openxr.h>
 
 #include <vector>
@@ -51,10 +53,11 @@ public:
         XrInstance instance,
         XrSystemId systemId,
         const void* graphicsBindingChain);
-    bool PollEvents();
+    bool PollEvents(XrEventObserver* observer = nullptr);
     bool PumpFrame(
         XrFrameRenderer* renderer,
-        XrFrameUpdater* updater = nullptr);
+        XrFrameUpdater* updater = nullptr,
+        XrUnderlayProvider* underlayProvider = nullptr);
     bool PumpEmptyFrame();
     void RequestExit();
     void Shutdown();

@@ -275,7 +275,7 @@ bool XrSessionContext::CreateReferenceSpaces() {
     return true;
 }
 
-bool XrSessionContext::PollEvents() {
+bool XrSessionContext::PollEvents(XrEventObserver* observer) {
     XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};
     while (true) {
         const XrResult result = xrPollEvent(instance_, &event);
@@ -317,6 +317,11 @@ bool XrSessionContext::PollEvents() {
             default:
                 LogInfo("OpenXR event type: %d", event.type);
                 break;
+        }
+        if (observer != nullptr && !observer->HandleEvent(event)) {
+            LogError("OpenXR event observer requested exit");
+            shouldExit_ = true;
+            return false;
         }
         event = XrEventDataBuffer{XR_TYPE_EVENT_DATA_BUFFER};
     }
@@ -396,7 +401,8 @@ bool XrSessionContext::LocateTrackedSpaces(
 
 bool XrSessionContext::PumpFrame(
     XrFrameRenderer* renderer,
-    XrFrameUpdater* updater) {
+    XrFrameUpdater* updater,
+    XrUnderlayProvider* underlayProvider) {
     if (!running_) {
         return true;
     }
@@ -488,15 +494,37 @@ bool XrSessionContext::PumpFrame(
         }
     }
 
+    std::vector<const XrCompositionLayerBaseHeader*> layers;
+    layers.reserve(2);
+    if (frameSucceeded &&
+        frameState.shouldRender == XR_TRUE &&
+        underlayProvider != nullptr &&
+        !underlayProvider->AppendUnderlayLayers(
+            frameState.predictedDisplayTime,
+            &layers)) {
+        LogError("Underlay provider failed; submitting an empty frame");
+        frameSucceeded = false;
+        layers.clear();
+    }
+    if (frameSucceeded && layer != nullptr) {
+        layers.push_back(layer);
+    }
+
     XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
     endInfo.displayTime = frameState.predictedDisplayTime;
     endInfo.environmentBlendMode = blendMode_;
-    endInfo.layerCount = layer == nullptr ? 0U : 1U;
-    endInfo.layers = layer == nullptr ? nullptr : &layer;
+    endInfo.layerCount = static_cast<uint32_t>(layers.size());
+    endInfo.layers = layers.empty() ? nullptr : layers.data();
     const bool endSucceeded = CheckXr(
             instance_,
             xrEndFrame(session_, &endInfo),
-            layer == nullptr ? "xrEndFrame(empty)" : "xrEndFrame(projection)");
+            layers.empty()
+                ? "xrEndFrame(empty)"
+                : layers.size() == 1
+                    ? layer == nullptr
+                        ? "xrEndFrame(underlay)"
+                        : "xrEndFrame(projection)"
+                    : "xrEndFrame(underlay+projection)");
     if (!endSucceeded || !frameSucceeded) {
         shouldExit_ = true;
         return false;
