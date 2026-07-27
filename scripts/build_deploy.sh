@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
             exit 2
             ;;
     esac
@@ -38,7 +38,7 @@ done
 
 if [[ -z "$app" ]]; then
     echo "Select an application with --app." >&2
-    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
     exit 2
 fi
 
@@ -105,6 +105,19 @@ case "$app" in
         activity="android.app.NativeActivity"
         log_tag="PassthroughMR"
         ;;
+    06-spatial-object)
+        build_command=(
+            "$repo_root/gradlew"
+            ":apps:06-spatial-object:assembleDebug"
+        )
+        if [[ "$vulkan_validation" == true ]]; then
+            build_command+=("-PquestVulkanValidation=true")
+        fi
+        apk_path="$repo_root/apps/06-spatial-object/build/outputs/apk/debug/06-spatial-object-debug.apk"
+        application_id="com.olibartfast.questlab.spatialobject"
+        activity="android.app.NativeActivity"
+        log_tag="SpatialObject"
+        ;;
     xrpassthrough)
         build_command=("$repo_root/XrPassthrough/Projects/Android/gradlew" assembleDebug)
         build_directory="$repo_root/XrPassthrough/Projects/Android"
@@ -115,7 +128,7 @@ case "$app" in
         ;;
     *)
         echo "Unknown application: $app" >&2
-        echo "Available applications: 01-openxr-bootstrap, 02-vulkan-stereo-triangle, 03-head-pose, 04-controller-input, 05-passthrough, xrpassthrough" >&2
+        echo "Available applications: 01-openxr-bootstrap, 02-vulkan-stereo-triangle, 03-head-pose, 04-controller-input, 05-passthrough, 06-spatial-object, xrpassthrough" >&2
         exit 2
         ;;
 esac
@@ -124,7 +137,8 @@ if [[ "$vulkan_validation" == true &&
       "$app" != "02-vulkan-stereo-triangle" &&
       "$app" != "03-head-pose" &&
       "$app" != "04-controller-input" &&
-      "$app" != "05-passthrough" ]]; then
+      "$app" != "05-passthrough" &&
+      "$app" != "06-spatial-object" ]]; then
     echo "--vulkan-validation is supported only by Vulkan applications." >&2
     exit 2
 fi
