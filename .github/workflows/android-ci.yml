@@ -42,6 +42,7 @@ jobs:
             apps/03-head-pose/build.gradle
             apps/04-controller-input/build.gradle
             apps/05-passthrough/build.gradle
+            apps/06-spatial-object/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -100,6 +101,9 @@ jobs:
       - name: Build passthrough mixed reality
         run: ./scripts/build_deploy.sh --app 05-passthrough --build-only
 
+      - name: Build stable spatial object
+        run: ./scripts/build_deploy.sh --app 06-spatial-object --build-only
+
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
 
@@ -113,6 +117,7 @@ jobs:
             apps/03-head-pose/build/outputs/apk/debug/03-head-pose-debug.apk
             apps/04-controller-input/build/outputs/apk/debug/04-controller-input-debug.apk
             apps/05-passthrough/build/outputs/apk/debug/05-passthrough-debug.apk
+            apps/06-spatial-object/build/outputs/apk/debug/06-spatial-object-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14
