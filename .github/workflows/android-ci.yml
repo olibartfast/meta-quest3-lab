@@ -43,6 +43,7 @@ jobs:
             apps/04-controller-input/build.gradle
             apps/05-passthrough/build.gradle
             apps/06-spatial-object/build.gradle
+            apps/07-hand-tracking/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -104,6 +105,9 @@ jobs:
       - name: Build stable spatial object
         run: ./scripts/build_deploy.sh --app 06-spatial-object --build-only
 
+      - name: Build hand tracking and pinch interaction
+        run: ./scripts/build_deploy.sh --app 07-hand-tracking --build-only
+
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
 
@@ -118,6 +122,7 @@ jobs:
             apps/04-controller-input/build/outputs/apk/debug/04-controller-input-debug.apk
             apps/05-passthrough/build/outputs/apk/debug/05-passthrough-debug.apk
             apps/06-spatial-object/build/outputs/apk/debug/06-spatial-object-debug.apk
+            apps/07-hand-tracking/build/outputs/apk/debug/07-hand-tracking-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14

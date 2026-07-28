@@ -36,6 +36,39 @@ void TestVectorAndQuaternionOperations() {
         "positive Y quarter-turn must rotate forward toward negative X");
 }
 
+void TestRotationFromTo() {
+    using namespace questlab::math;
+    const auto expectRotation = [](const Vec3& from, const Vec3& to) {
+        Quat rotation;
+        Expect(
+            RotationFromTo(from, to, &rotation),
+            "valid vectors must produce a rotation");
+        Vec3 expected = to;
+        Normalize(&expected);
+        Expect(
+            NearlyEqual(Rotate(rotation, from), expected, 1.0e-5F),
+            "from-to rotation must align its input with the target");
+    };
+
+    expectRotation({0.0F, 0.0F, -1.0F}, {0.0F, 0.0F, -1.0F});
+    expectRotation({0.0F, 0.0F, -1.0F}, {0.0F, 0.0F, 1.0F});
+    expectRotation({0.0F, 0.0F, -1.0F}, {1.0F, 0.0F, 0.0F});
+    Vec3 arbitraryFrom{2.0F, -1.0F, 3.0F};
+    Normalize(&arbitraryFrom);
+    expectRotation(arbitraryFrom, {-0.5F, 4.0F, 1.0F});
+
+    Quat rotation;
+    Expect(
+        !RotationFromTo({}, {1.0F, 0.0F, 0.0F}, &rotation),
+        "zero source vector must fail");
+    Expect(
+        !RotationFromTo(
+            {1.0F, 0.0F, 0.0F},
+            {0.0F, 1.0F, 0.0F},
+            nullptr),
+        "null rotation output must fail");
+}
+
 void TestPoseCompositionAndInverse() {
     using namespace questlab::math;
     const Pose worldFromParent{
@@ -92,6 +125,7 @@ void TestProjectionDepthRange() {
 
 int main() {
     TestVectorAndQuaternionOperations();
+    TestRotationFromTo();
     TestPoseCompositionAndInverse();
     TestProjectionDepthRange();
     if (failures != 0) {
