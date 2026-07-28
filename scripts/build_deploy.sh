@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
             exit 2
             ;;
     esac
@@ -38,7 +38,7 @@ done
 
 if [[ -z "$app" ]]; then
     echo "Select an application with --app." >&2
-    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|xrpassthrough} [--build-only] [--vulkan-validation]" >&2
     exit 2
 fi
 
@@ -131,6 +131,19 @@ case "$app" in
         activity="android.app.NativeActivity"
         log_tag="HandTracking"
         ;;
+    08-spatial-anchors)
+        build_command=(
+            "$repo_root/gradlew"
+            ":apps:08-spatial-anchors:assembleDebug"
+        )
+        if [[ "$vulkan_validation" == true ]]; then
+            build_command+=("-PquestVulkanValidation=true")
+        fi
+        apk_path="$repo_root/apps/08-spatial-anchors/build/outputs/apk/debug/08-spatial-anchors-debug.apk"
+        application_id="com.olibartfast.questlab.spatialanchors"
+        activity="android.app.NativeActivity"
+        log_tag="SpatialAnchors"
+        ;;
     xrpassthrough)
         build_command=("$repo_root/XrPassthrough/Projects/Android/gradlew" assembleDebug)
         build_directory="$repo_root/XrPassthrough/Projects/Android"
@@ -141,7 +154,7 @@ case "$app" in
         ;;
     *)
         echo "Unknown application: $app" >&2
-        echo "Available applications: 01-openxr-bootstrap, 02-vulkan-stereo-triangle, 03-head-pose, 04-controller-input, 05-passthrough, 06-spatial-object, 07-hand-tracking, xrpassthrough" >&2
+        echo "Available applications: 01-openxr-bootstrap, 02-vulkan-stereo-triangle, 03-head-pose, 04-controller-input, 05-passthrough, 06-spatial-object, 07-hand-tracking, 08-spatial-anchors, xrpassthrough" >&2
         exit 2
         ;;
 esac
@@ -152,7 +165,8 @@ if [[ "$vulkan_validation" == true &&
       "$app" != "04-controller-input" &&
       "$app" != "05-passthrough" &&
       "$app" != "06-spatial-object" &&
-      "$app" != "07-hand-tracking" ]]; then
+      "$app" != "07-hand-tracking" &&
+      "$app" != "08-spatial-anchors" ]]; then
     echo "--vulkan-validation is supported only by Vulkan applications." >&2
     exit 2
 fi
