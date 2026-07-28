@@ -9,6 +9,7 @@ namespace {
 using questlab::interaction::Aabb;
 using questlab::interaction::Hand;
 using questlab::interaction::IntersectRayAabb;
+using questlab::interaction::PinchState;
 using questlab::interaction::Ray;
 using questlab::interaction::SelectionFrameInput;
 using questlab::interaction::SelectionState;
@@ -74,6 +75,37 @@ int main() {
     Require(simultaneous.selectionTriggered &&
                 simultaneous.selectingHand == Hand::Left,
             "simultaneous equal hits choose left deterministically");
+
+    PinchState leftPinch;
+    PinchState rightPinch;
+    const questlab::math::Vec3 thumb{};
+    Require(
+        !leftPinch.Update(thumb, {{0.026F, 0.0F, 0.0F}}).active,
+        "pinch remains open above its press threshold");
+    const auto started =
+        leftPinch.Update(thumb, {{0.025F, 0.0F, 0.0F}});
+    Require(
+        started.active && started.started && !started.ended,
+        "pinch starts at its press threshold");
+    const auto held =
+        leftPinch.Update(thumb, {{0.035F, 0.0F, 0.0F}});
+    Require(
+        held.active && !held.started && !held.ended,
+        "pinch hysteresis holds between thresholds");
+    Require(
+        !rightPinch.IsActive(),
+        "left and right pinch states remain independent");
+    const auto released =
+        leftPinch.Update(thumb, {{0.040F, 0.0F, 0.0F}});
+    Require(
+        !released.active && released.ended,
+        "pinch ends at its release threshold");
+    leftPinch.Update(thumb, {{0.020F, 0.0F, 0.0F}});
+    const auto lostTracking =
+        leftPinch.Update(std::nullopt, std::nullopt);
+    Require(
+        lostTracking.ended && !lostTracking.active,
+        "tracking loss ends an active pinch");
 
     std::cout << "xr_interaction tests passed\n";
     return 0;

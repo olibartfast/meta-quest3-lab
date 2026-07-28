@@ -47,6 +47,11 @@ Quat Conjugate(const Quat& quaternion);
 Quat Multiply(const Quat& left, const Quat& right);
 bool Normalize(Quat* quaternion, float epsilon = kDefaultEpsilon);
 Vec3 Rotate(const Quat& quaternion, const Vec3& vector);
+bool RotationFromTo(
+    const Vec3& from,
+    const Vec3& to,
+    Quat* rotation,
+    float epsilon = kDefaultEpsilon);
 
 Pose IdentityPose();
 Pose Compose(const Pose& parentFromMiddle, const Pose& middleFromChild);
