@@ -1,5 +1,6 @@
 #include "xr_math/xr_math.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace questlab::math {
@@ -103,6 +104,48 @@ Vec3 Rotate(const Quat& quaternion, const Vec3& vector) {
         Add(
             Scale(twiceCross, quaternion.w),
             Cross(imaginary, twiceCross)));
+}
+
+bool RotationFromTo(
+    const Vec3& fromInput,
+    const Vec3& toInput,
+    Quat* rotation,
+    float epsilon) {
+    if (rotation == nullptr) {
+        return false;
+    }
+
+    Vec3 from = fromInput;
+    Vec3 to = toInput;
+    if (!Normalize(&from, epsilon) || !Normalize(&to, epsilon)) {
+        return false;
+    }
+
+    const float alignment = std::clamp(Dot(from, to), -1.0F, 1.0F);
+    if (alignment >= 1.0F - epsilon) {
+        *rotation = IdentityQuat();
+        return true;
+    }
+    if (alignment <= -1.0F + epsilon) {
+        const float absoluteX = std::abs(from.x);
+        const float absoluteY = std::abs(from.y);
+        const float absoluteZ = std::abs(from.z);
+        const Vec3 basis = absoluteX <= absoluteY && absoluteX <= absoluteZ
+            ? Vec3{1.0F, 0.0F, 0.0F}
+            : (absoluteY <= absoluteZ
+                ? Vec3{0.0F, 1.0F, 0.0F}
+                : Vec3{0.0F, 0.0F, 1.0F});
+        Vec3 axis = Cross(from, basis);
+        if (!Normalize(&axis, epsilon)) {
+            return false;
+        }
+        *rotation = {axis.x, axis.y, axis.z, 0.0F};
+        return true;
+    }
+
+    const Vec3 axis = Cross(from, to);
+    *rotation = {axis.x, axis.y, axis.z, 1.0F + alignment};
+    return Normalize(rotation, epsilon);
 }
 
 Pose IdentityPose() {

@@ -141,4 +141,51 @@ void SelectionState::Reset() {
     selected_ = false;
 }
 
+PinchState::PinchState(float pressThreshold, float releaseThreshold)
+    : pressThreshold_(std::max(0.0F, pressThreshold)),
+      releaseThreshold_(std::max(0.0F, releaseThreshold)) {
+    if (releaseThreshold_ < pressThreshold_) {
+        std::swap(releaseThreshold_, pressThreshold_);
+    }
+}
+
+PinchFrameResult PinchState::Update(
+    const std::optional<math::Vec3>& thumbTip,
+    const std::optional<math::Vec3>& indexTip) {
+    PinchFrameResult result;
+    if (!thumbTip.has_value() || !indexTip.has_value()) {
+        result.ended = active_;
+        active_ = false;
+        return result;
+    }
+
+    result.distance = math::Length(
+        math::Subtract(*thumbTip, *indexTip));
+    result.center = math::Scale(math::Add(*thumbTip, *indexTip), 0.5F);
+    if (!std::isfinite(result.distance) ||
+        !std::isfinite(result.center.x) ||
+        !std::isfinite(result.center.y) ||
+        !std::isfinite(result.center.z)) {
+        result.ended = active_;
+        active_ = false;
+        result.distance = 0.0F;
+        result.center = {};
+        return result;
+    }
+
+    if (!active_ && result.distance <= pressThreshold_) {
+        active_ = true;
+        result.started = true;
+    } else if (active_ && result.distance >= releaseThreshold_) {
+        active_ = false;
+        result.ended = true;
+    }
+    result.active = active_;
+    return result;
+}
+
+void PinchState::Reset() {
+    active_ = false;
+}
+
 }  // namespace questlab::interaction
