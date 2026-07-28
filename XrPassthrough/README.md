@@ -9,6 +9,7 @@ Passthrough is a method that allows users to view their physical environment thr
 
 ## The Sample
 This sample demonstrates the use of both still and animated styles, as well as selective and projected passthrough.
+- Reference: https://developers.meta.com/horizon/documentation/native/native-openxr-sdk-sample/
 
 ---
 
