@@ -53,13 +53,23 @@ meta-quest3-lab/
 │   ├── 06-spatial-object/
 │   ├── 07-hand-tracking/
 │   ├── 08-spatial-anchors/
-│   └── 09-cv-overlay/
+│   ├── 09-quest-camera/
+│   ├── 11-rfdetr-live/
+│   ├── 12-environment-depth/
+│   ├── 13-rgb-depth-alignment/
+│   └── 14-cv-spatial-overlay/
 ├── libs/
 │   ├── xr_core/
 │   ├── vulkan_renderer/
 │   ├── xr_math/
 │   ├── spatial_ui/
-│   └── perception_client/
+│   ├── camera_source/
+│   ├── depth_source/
+│   ├── sensor_rig/
+│   └── perception_protocol/
+├── tools/
+│   ├── rfdetr_export/
+│   └── rfdetr_inference_server/
 ├── docs/
 ├── scripts/
 ├── third_party/
@@ -354,73 +364,268 @@ A user can create an anchor, attach a virtual marker to it, and restore it accor
 
 ---
 
-# Milestone 9 — Computer-Vision Overlay
-
-## Goal
-
-Connect a real-time C++ computer-vision or inference pipeline to the XR application and render its results spatially.
-
-## Initial Architecture
+## Computer-Vision Milestone Ladder
 
 ```text
-Camera or recorded source
-        ↓
-C++ perception service on PC or Jetson
-        ↓
-UDP, WebSocket, or another lightweight transport
-        ↓
-Native Quest OpenXR application
-        ↓
-Labels, boxes, keypoints, trajectories, or alerts
+M9 Quest RGB camera ──► M10 offline RF-DETR ──► M11 live RF-DETR 2D ──┐
+          │                                                           │
+          └────────► M12 environment depth ──► M13 RGB-depth alignment ├─► M14 spatial overlay
+                                                                      │
+                                             validated inputs ────────┘
 ```
 
-Do not initially make the project depend on unrestricted access to Quest passthrough RGB frames. Treat external perception and on-device XR as separate systems connected through an explicit protocol.
+Each milestone introduces one principal uncertainty:
 
-## Tasks
-
-- Define a versioned perception message schema.
-- Implement a network client on Quest.
-- Receive timestamped detections or poses.
-- Transform perception coordinates into an OpenXR reference space.
-- Render one or more of:
-  - labels;
-  - 3D markers;
-  - bounding boxes;
-  - skeletal keypoints;
-  - trajectories;
-  - confidence indicators.
-- Handle stale data, dropped packets, disconnects, and reconnection.
-- Measure end-to-end latency.
-- Document calibration requirements between the external camera and XR space.
-
-## Suggested Data Model
-
-```cpp
-struct Detection3D {
-    std::uint32_t id;
-    float position[3];
-    float extent[3];
-    float confidence;
-    char label[32];
-};
-```
-
-Replace the example with a safe, serialized, versioned protocol before production use.
-
-## Deliverables
-
-- `apps/09-cv-overlay`.
-- `libs/perception_client`.
-- A small mock perception server.
-- `docs/perception-coordinate-calibration.md`.
-
-## Definition of Done
-
-The Quest application receives simulated or real detections from a C++ service and renders stable, timestamp-aware spatial annotations in XR.
+| Milestone | New uncertainty | Observable result |
+|---|---|---|
+| 9 | camera API and adapter lifecycle | live/replayed RGB preview |
+| 10 | RF-DETR export and C++ inference | annotated recorded images |
+| 11 | live transport and frame correlation | 2D boxes on the exact RGB frame |
+| 12 | Meta depth acquisition and metric conversion | depth view and distance probe |
+| 13 | time and coordinate registration | depth samples aligned over RGB |
+| 14 | detection/depth fusion | world-locked metric 3D boxes |
 
 ---
 
-# Milestone 10 — Performance and Production Quality
+# Milestone 9 — Quest Camera Capture
+
+**Status:** Planned in `docs/milestone9-plan.md`; implementation has not
+started.
+
+## Goal
+
+Access one Quest 3 forward-facing RGB camera safely from the native
+application, display a live preview, and create an opt-in recorded replay
+fixture. This milestone proves only camera access, metadata, ownership, and
+lifecycle behavior.
+
+## Tasks
+
+- Add runtime permission handling for Quest passthrough camera access.
+- Define an engine-independent RGB camera-source interface.
+- Implement Meta Camera2/Camera NDK behind an adapter.
+- Implement recorded replay as a second adapter.
+- Select adapters through a camera-source factory and explicit configuration.
+- Capture one Quest RGB camera through the Meta adapter.
+- Record image timestamps, intrinsics, lens pose, and selected stream format.
+- Handle YUV plane strides and image lifetime correctly.
+- Display the captured image on a native Vulkan diagnostic quad.
+- Bound capture queues and drop old frames instead of blocking OpenXR.
+- Stop and restore capture across Android pause/resume.
+- Add a deterministic recorded-frame replay path.
+
+## Deliverables
+
+- `apps/09-quest-camera`.
+- `libs/camera_source`.
+- Meta Camera2 and replay camera-source adapters.
+- A privacy-reviewed recorded RGB fixture and manifest.
+- `docs/quest-camera.md`.
+
+## Definition of Done
+
+App 09 shows a live feed from a real Quest passthrough camera on a diagnostic
+quad, logs correct capture metadata, survives lifecycle transitions, records
+only after an explicit developer action, and replays one approved frame
+deterministically through the same interface. Switching between Meta and
+replay sources requires only factory configuration. No inference, networking,
+or depth is required.
+
+---
+
+# Milestone 10 — Offline RF-DETR Detection
+
+**Status:** Planned in `docs/milestone10-plan.md`; blocked by Milestone 9.
+
+## Goal
+
+Run a pinned RF-DETR model on recorded Quest RGB frames through a repeatable
+host pipeline. This milestone proves model export, preprocessing,
+postprocessing, and C++ inference without live networking or XR timing.
+
+## Tasks
+
+- Pin the RF-DETR checkpoint and export environment.
+- Export RF-DETR to ONNX with a machine-readable model manifest.
+- Record input shape, colour order, normalization, resize, and padding.
+- Save reference detections from the RF-DETR implementation.
+- Implement equivalent C++ inference with ONNX Runtime.
+- Undo letterboxing and report boxes in original Quest-image coordinates.
+- Compare C++ results against the reference within explicit tolerances.
+- Produce annotated output images and timing reports.
+
+## Deliverables
+
+- `tools/rfdetr_export`.
+- `tools/rfdetr_inference`.
+- A model manifest and reproducible export instructions.
+- Approved replay inputs and expected detection metadata.
+
+## Definition of Done
+
+The C++ inference tool detects real objects in approved recorded Quest images,
+matches RF-DETR reference results within documented tolerances, and reports
+preprocessing, inference, and postprocessing time separately.
+
+---
+
+# Milestone 11 — Live RF-DETR 2D Detection
+
+**Status:** Planned in `docs/milestone11-plan.md`; blocked by Milestones 9 and
+10.
+
+## Goal
+
+Stream bounded-rate Quest camera frames to the real RF-DETR inference service,
+correlate responses by frame ID, and draw returned 2D boxes on the camera
+preview quad. This milestone proves live transport and temporal identity, not
+metric 3D.
+
+## Tasks
+
+- Define an explicitly encoded, versioned, bounded protocol.
+- Use framed reliable transport for image payloads and responses.
+- Negotiate the RF-DETR model manifest.
+- Send only the newest eligible RGB frame.
+- Return boxes, class IDs, confidence, and inference timestamps.
+- Reject malformed, duplicate, unknown, and expired frame IDs.
+- Overlay boxes on the exact retained preview frame.
+- Handle server absence, overload, disconnect, and reconnect.
+- Measure capture-to-preview-result latency and queue occupancy.
+
+## Deliverables
+
+- `apps/11-rfdetr-live`.
+- `libs/perception_protocol`.
+- `tools/rfdetr_inference_server`.
+- Host codec, framing, and fault-injection tests.
+
+## Definition of Done
+
+The headset preview shows real RF-DETR boxes over the exact originating Quest
+RGB frame for at least two physical object classes. Queues remain bounded,
+stale results are hidden, and reconnect works without restarting OpenXR.
+
+---
+
+# Milestone 12 — Environment Depth
+
+**Status:** Planned in `docs/milestone12-plan.md`; blocked by Milestone 9 only.
+
+## Goal
+
+Acquire Meta environment depth independently of object detection, convert it
+to metric distances, and validate it against measured physical surfaces.
+
+## Tasks
+
+- Request spatial-data permission.
+- Define an engine-independent depth-source interface and factory.
+- Implement Meta environment depth behind an adapter.
+- Enable and capability-check `XR_META_environment_depth`.
+- Create, start, stop, and destroy the provider and readable swapchain.
+- Acquire one depth image at the valid point in each OpenXR frame.
+- Preserve near/far, FOV, pose, dimensions, and display-time metadata.
+- Convert depth texture values into metric distance.
+- Add a depth diagnostic visualization and probe.
+- Reject the unreliable near field and invalid values.
+- Measure error for several static surfaces.
+
+## Deliverables
+
+- `apps/12-environment-depth`.
+- `libs/depth_source`.
+- Meta environment-depth adapter.
+- Depth projection/math tests.
+- `docs/environment-depth.md`.
+
+## Definition of Done
+
+App 12 visualizes live environment depth, reports plausible metric distances,
+matches several measured surfaces within documented error, and survives three
+clean lifecycle cycles without OpenXR errors. The application consumes only
+the generic depth-source interface.
+
+---
+
+# Milestone 13 — RGB and Depth Alignment
+
+**Status:** Planned in `docs/milestone13-plan.md`; blocked by Milestones 9 and
+12.
+
+## Goal
+
+Prove the spatial and temporal registration between Quest Camera2 RGB and Meta
+environment depth before adding inference. Reproject depth samples into the
+RGB preview and measure alignment error.
+
+## Tasks
+
+- Determine and validate the Camera2 sensor timestamp timebase.
+- Correlate Camera2, monotonic, and OpenXR time domains.
+- Locate the HMD and RGB camera pose at capture time.
+- Match each RGB frame to a bounded retained depth snapshot.
+- Compose RGB and depth sources through a sensor-rig factory.
+- Transform depth pixels through depth view, `LOCAL`, and RGB camera spaces.
+- Project samples with RGB intrinsics and distortion conventions.
+- Display sparse depth reprojection over the retained RGB preview.
+- Reject temporally distant or geometrically invalid pairs.
+- Measure pixel error while static and during slow head motion.
+
+## Deliverables
+
+- `apps/13-rgb-depth-alignment`.
+- `libs/sensor_rig`.
+- Reusable timestamp-correlation and reprojection code.
+- `docs/quest-camera-depth-calibration.md`.
+
+## Definition of Done
+
+Depth samples align with corresponding physical edges in the Quest RGB
+preview within a documented pixel tolerance, including a controlled slow-head-
+motion test. Failure to map timestamp domains reliably is reported as a
+blocker rather than hidden by an approximation.
+
+---
+
+# Milestone 14 — RF-DETR Spatial Overlay
+
+**Status:** Planned in `docs/milestone14-plan.md`; blocked by Milestones 11 and
+13.
+
+## Goal
+
+Combine live RF-DETR detections with aligned environment depth to create
+metric, world-space 3D annotations over passthrough.
+
+## Tasks
+
+- Retrieve the retained RGB/depth record for each RF-DETR frame ID.
+- Select and robustly cluster depth samples inside each 2D detection.
+- Compute a metric center, conservative extents, and fusion confidence.
+- Transform results into OpenXR `LOCAL`.
+- Render confidence- and age-coded 3D boxes.
+- Hide invalid, low-confidence, stale, or uncorrelated results.
+- Measure 2D IoU, depth error, 3D center error, extent error, and jitter.
+- Validate at least two real physical object classes.
+
+## Deliverables
+
+- `apps/14-cv-spatial-overlay`.
+- Reusable RGB/depth/detection fusion.
+- Recorded replay and synthetic fault fixtures.
+- `docs/milestone14-validation.md`.
+
+## Definition of Done
+
+Real RF-DETR detections become metric 3D overlays that remain world-locked
+around static physical objects. Accuracy, jitter, latency, failure cases, and
+limitations are measured quantitatively; mock detections alone cannot satisfy
+completion.
+
+---
+
+# Milestone 15 — Performance and Production Quality
 
 ## Goal
 
@@ -430,6 +635,14 @@ Improve the experiments with performance instrumentation, robustness, documentat
 
 - Add CPU and GPU frame-time instrumentation.
 - Track missed frames and stale perception data.
+- Profile Camera2 capture, depth acquisition, readback, transport, RF-DETR
+  inference, fusion, and rendering independently.
+- Evaluate RF-DETR model size, input resolution, quantization, and C++ runtime
+  backends against an explicit accuracy/latency budget.
+- Benchmark an on-device RF-DETR path only after the host path is correct.
+- Add temporal association and tracking without hiding raw detector output.
+- Replace box-only depth sampling with segmentation-assisted fusion if the
+  measured geometry requires it.
 - Minimize allocations in the frame loop.
 - Introduce RAII wrappers for OpenXR and Vulkan handles where useful.
 - Add structured logging levels.
@@ -456,8 +669,13 @@ The repository demonstrates clean native architecture, repeatable builds, measur
 7. Implement stable object placement.
 8. Add hand tracking.
 9. Add anchors.
-10. Integrate an external CV pipeline.
-11. Profile, document, and consolidate the project.
+10. Capture and preview Quest RGB.
+11. Validate RF-DETR offline on recorded Quest frames.
+12. Run frame-correlated RF-DETR live.
+13. Acquire and validate metric environment depth.
+14. Align RGB and depth spatially and temporally.
+15. Fuse detections and depth into world-space overlays.
+16. Profile, harden, document, and consolidate the project.
 
 ---
 
