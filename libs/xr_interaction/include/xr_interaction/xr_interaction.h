@@ -63,4 +63,30 @@ private:
     bool selected_ = false;
 };
 
+struct PinchFrameResult {
+    bool active = false;
+    bool started = false;
+    bool ended = false;
+    float distance = 0.0F;
+    math::Vec3 center{};
+};
+
+class PinchState {
+public:
+    PinchState(
+        float pressThreshold = 0.025F,
+        float releaseThreshold = 0.040F);
+
+    PinchFrameResult Update(
+        const std::optional<math::Vec3>& thumbTip,
+        const std::optional<math::Vec3>& indexTip);
+    bool IsActive() const { return active_; }
+    void Reset();
+
+private:
+    float pressThreshold_ = 0.025F;
+    float releaseThreshold_ = 0.040F;
+    bool active_ = false;
+};
+
 }  // namespace questlab::interaction
