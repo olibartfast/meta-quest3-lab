@@ -11,23 +11,39 @@ set(vertex_shader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.vert")
 set(fragment_shader "${CMAKE_CURRENT_SOURCE_DIR}/shaders/triangle.frag")
 set(debug_line_vertex_shader
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/debug_lines.vert")
+set(image_quad_vertex_shader
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_quad.vert")
+set(image_quad_fragment_shader
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/image_quad.frag")
 set(vertex_spv "${generated_shader_dir}/triangle.vert.spv")
 set(fragment_spv "${generated_shader_dir}/triangle.frag.spv")
 set(debug_line_vertex_spv
     "${generated_shader_dir}/debug_lines.vert.spv")
+set(image_quad_vertex_spv
+    "${generated_shader_dir}/image_quad.vert.spv")
+set(image_quad_fragment_spv
+    "${generated_shader_dir}/image_quad.frag.spv")
 set(vertex_include "${generated_shader_dir}/triangle.vert.inc")
 set(fragment_include "${generated_shader_dir}/triangle.frag.inc")
 set(debug_line_vertex_include
     "${generated_shader_dir}/debug_lines.vert.inc")
+set(image_quad_vertex_include
+    "${generated_shader_dir}/image_quad.vert.inc")
+set(image_quad_fragment_include
+    "${generated_shader_dir}/image_quad.frag.inc")
 
 add_custom_command(
     OUTPUT
         "${vertex_spv}"
         "${fragment_spv}"
         "${debug_line_vertex_spv}"
+        "${image_quad_vertex_spv}"
+        "${image_quad_fragment_spv}"
         "${vertex_include}"
         "${fragment_include}"
         "${debug_line_vertex_include}"
+        "${image_quad_vertex_include}"
+        "${image_quad_fragment_include}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${generated_shader_dir}"
     COMMAND "${glslc}" --target-env=vulkan1.1 -O
         "${vertex_shader}" -o "${vertex_spv}"
@@ -39,16 +55,28 @@ add_custom_command(
     COMMAND "${spirv_val}" --target-env vulkan1.1 "${fragment_spv}"
     COMMAND "${spirv_val}" --target-env vulkan1.1
         "${debug_line_vertex_spv}"
+    COMMAND "${glslc}" --target-env=vulkan1.1 -O
+        "${image_quad_vertex_shader}" -o "${image_quad_vertex_spv}"
+    COMMAND "${glslc}" --target-env=vulkan1.1 -O
+        "${image_quad_fragment_shader}" -o "${image_quad_fragment_spv}"
+    COMMAND "${spirv_val}" --target-env vulkan1.1 "${image_quad_vertex_spv}"
+    COMMAND "${spirv_val}" --target-env vulkan1.1 "${image_quad_fragment_spv}"
     COMMAND "${glslc}" --target-env=vulkan1.1 -O -mfmt=c
         "${vertex_shader}" -o "${vertex_include}"
     COMMAND "${glslc}" --target-env=vulkan1.1 -O -mfmt=c
         "${fragment_shader}" -o "${fragment_include}"
     COMMAND "${glslc}" --target-env=vulkan1.1 -O -mfmt=c
         "${debug_line_vertex_shader}" -o "${debug_line_vertex_include}"
+    COMMAND "${glslc}" --target-env=vulkan1.1 -O -mfmt=c
+        "${image_quad_vertex_shader}" -o "${image_quad_vertex_include}"
+    COMMAND "${glslc}" --target-env=vulkan1.1 -O -mfmt=c
+        "${image_quad_fragment_shader}" -o "${image_quad_fragment_include}"
     DEPENDS
         "${vertex_shader}"
         "${fragment_shader}"
         "${debug_line_vertex_shader}"
+        "${image_quad_vertex_shader}"
+        "${image_quad_fragment_shader}"
     VERBATIM
 )
 
@@ -57,12 +85,16 @@ add_library(vulkan_renderer STATIC
     "${vertex_include}"
     "${fragment_include}"
     "${debug_line_vertex_include}"
+    "${image_quad_vertex_include}"
+    "${image_quad_fragment_include}"
 )
 
 set_source_files_properties(
     "${vertex_include}"
     "${fragment_include}"
     "${debug_line_vertex_include}"
+    "${image_quad_vertex_include}"
+    "${image_quad_fragment_include}"
     PROPERTIES GENERATED TRUE
 )
 

@@ -16,7 +16,7 @@ From the repository root, run:
 ./scripts/print_toolchain_config.sh --strict
 ```
 
-The strict check enforces Java 21, SDK Platform 34, Build Tools 34.0.0, CMake 3.22.1, and NDK 29.0.14206865. `QUEST_ANDROID_SDK_ROOT` selects the canonical SDK, followed by `ANDROID_HOME`, then `ANDROID_SDK_ROOT`; all Android variables are normalized to that one root. `QUEST_JAVA_HOME` can select a nonstandard Java 21 installation.
+The strict check enforces Java 21, SDK Platform 34, Build Tools 34.0.0, CMake 3.22.1, and NDK 29.0.14206865. `QUEST_ANDROID_SDK_ROOT` selects the canonical SDK, followed by `ANDROID_HOME`, then `ANDROID_SDK_ROOT`; all Android variables are normalized to that one root. `QUEST_JAVA_HOME` can select a nonstandard Java 21 installation. Gradle itself uses JDK 17 through `QUEST_GRADLE_JAVA_HOME`, matching AGP 8.2 compatibility and avoiding the Android JDK-image transform failure seen when AGP runs on JDK 21.
 
 ## Authoritative Documentation
 
