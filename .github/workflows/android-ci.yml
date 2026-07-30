@@ -45,6 +45,7 @@ jobs:
             apps/06-spatial-object/build.gradle
             apps/07-hand-tracking/build.gradle
             apps/08-spatial-anchors/build.gradle
+            apps/09-quest-camera/build.gradle
             XrPassthrough/Projects/Android/build.gradle
             XrPassthrough/Projects/Android/gradle/wrapper/gradle-wrapper.properties
 
@@ -52,6 +53,15 @@ jobs:
         run: |
           echo "QUEST_ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
           echo "QUEST_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+
+      - name: Set up Gradle runtime Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Select Gradle runtime
+        run: echo "QUEST_GRADLE_JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
 
       - name: Check shell scripts
         run: |
@@ -100,6 +110,12 @@ jobs:
           cmake --build build/xr-spatial-anchor-tests --parallel
           ctest --test-dir build/xr-spatial-anchor-tests --output-on-failure
 
+      - name: Test camera-source ownership and conversion
+        run: |
+          cmake -S libs/camera_source -B build/camera-source-tests -DBUILD_TESTING=ON
+          cmake --build build/camera-source-tests --parallel
+          ctest --test-dir build/camera-source-tests --output-on-failure
+
       - name: Build OpenXR bootstrap
         run: ./scripts/build_deploy.sh --app 01-openxr-bootstrap --build-only
 
@@ -124,6 +140,9 @@ jobs:
       - name: Build persistent spatial anchors
         run: ./scripts/build_deploy.sh --app 08-spatial-anchors --build-only
 
+      - name: Build Quest camera capture
+        run: ./scripts/build_deploy.sh --app 09-quest-camera --build-only
+
       - name: Build legacy passthrough regression
         run: ./scripts/build_deploy.sh --app xrpassthrough --build-only
 
@@ -140,6 +159,7 @@ jobs:
             apps/06-spatial-object/build/outputs/apk/debug/06-spatial-object-debug.apk
             apps/07-hand-tracking/build/outputs/apk/debug/07-hand-tracking-debug.apk
             apps/08-spatial-anchors/build/outputs/apk/debug/08-spatial-anchors-debug.apk
+            apps/09-quest-camera/build/outputs/apk/debug/09-quest-camera-debug.apk
             XrPassthrough/Projects/Android/build/outputs/apk/debug/XrPassthrough-debug.apk
           if-no-files-found: error
           retention-days: 14

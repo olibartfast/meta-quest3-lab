@@ -13,6 +13,7 @@ sudo apt-get install -y \
     build-essential \
     git \
     ninja-build \
+    openjdk-17-jdk \
     openjdk-21-jdk \
     unzip \
     wget
@@ -48,6 +49,7 @@ export ANDROID_SDK_ROOT=\"\$QUEST_ANDROID_SDK_ROOT\"
 export ANDROID_NDK_HOME=\"\$QUEST_ANDROID_SDK_ROOT/ndk/$QUEST_NDK_VERSION\"
 export ANDROID_NDK_ROOT=\"\$ANDROID_NDK_HOME\"
 export JAVA_HOME=\"/usr/lib/jvm/java-${QUEST_JAVA_VERSION}-openjdk-amd64\"
+export QUEST_GRADLE_JAVA_HOME=\"/usr/lib/jvm/java-${QUEST_GRADLE_JAVA_VERSION}-openjdk-amd64\"
 export PATH=\"\$ANDROID_SDK_ROOT/platform-tools:\$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:\$PATH\"
 EOF
 )"

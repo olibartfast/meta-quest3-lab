@@ -48,6 +48,7 @@ require_version() {
 }
 
 java_version="$(java -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')"
+gradle_java_version="$("$QUEST_GRADLE_JAVA_HOME/bin/java" -version 2>&1 | sed -n '1s/.*version "\([0-9]*\).*/\1/p')"
 cmake_version=""
 if [[ -x "$sdk_root/cmake/$QUEST_CMAKE_VERSION/bin/cmake" ]]; then
     cmake_version="$("$sdk_root/cmake/$QUEST_CMAKE_VERSION/bin/cmake" --version | sed -n '1s/^cmake version //p')"
@@ -69,6 +70,8 @@ report_path "Repository" "$repo_root"
 report_path "Android SDK" "$sdk_root"
 report_path "JAVA_HOME" "${JAVA_HOME:-not found}"
 require_version "Java" "$QUEST_JAVA_VERSION" "$java_version"
+report_path "Gradle JAVA_HOME" "$QUEST_GRADLE_JAVA_HOME"
+require_version "Gradle Java" "$QUEST_GRADLE_JAVA_VERSION" "$gradle_java_version"
 require_path "SDK platform" "$sdk_root/platforms/android-$QUEST_COMPILE_SDK"
 require_path "Build tools" "$sdk_root/build-tools/$QUEST_BUILD_TOOLS_VERSION"
 require_version "CMake" "$QUEST_CMAKE_VERSION" "$cmake_version"
