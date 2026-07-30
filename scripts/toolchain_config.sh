@@ -3,6 +3,7 @@
 # Shared, pinned Android toolchain configuration.
 # shellcheck disable=SC2034  # Constants are consumed by scripts that source this file.
 readonly QUEST_JAVA_VERSION="21"
+readonly QUEST_GRADLE_JAVA_VERSION="17"
 readonly QUEST_COMPILE_SDK="34"
 readonly QUEST_BUILD_TOOLS_VERSION="34.0.0"
 readonly QUEST_CMAKE_VERSION="3.22.1"
@@ -32,11 +33,23 @@ quest_java_home() {
     fi
 }
 
+quest_gradle_java_home() {
+    if [[ -n "${QUEST_GRADLE_JAVA_HOME:-}" ]]; then
+        printf '%s\n' "$QUEST_GRADLE_JAVA_HOME"
+    elif [[ -d "/usr/lib/jvm/java-${QUEST_GRADLE_JAVA_VERSION}-openjdk-amd64" ]]; then
+        printf '%s\n' "/usr/lib/jvm/java-${QUEST_GRADLE_JAVA_VERSION}-openjdk-amd64"
+    else
+        quest_java_home
+    fi
+}
+
 quest_export_toolchain() {
     local sdk_root
     local java_home
+    local gradle_java_home
     sdk_root="$(quest_sdk_root)"
     java_home="$(quest_java_home)"
+    gradle_java_home="$(quest_gradle_java_home)"
 
     export ANDROID_HOME="$sdk_root"
     export ANDROID_SDK_ROOT="$sdk_root"
@@ -45,6 +58,12 @@ quest_export_toolchain() {
     if [[ -n "$java_home" ]]; then
         export JAVA_HOME="$java_home"
         export PATH="$JAVA_HOME/bin:$PATH"
+    fi
+    if [[ -n "$gradle_java_home" ]]; then
+        export QUEST_GRADLE_JAVA_HOME="$gradle_java_home"
+        if [[ " ${GRADLE_OPTS:-} " != *" -Dorg.gradle.java.home="* ]]; then
+            export GRADLE_OPTS="${GRADLE_OPTS:-} -Dorg.gradle.java.home=$gradle_java_home"
+        fi
     fi
     export PATH="$sdk_root/platform-tools:$sdk_root/cmdline-tools/latest/bin:$PATH"
 }

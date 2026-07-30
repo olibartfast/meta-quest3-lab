@@ -27,6 +27,13 @@ const vec3 rectanglePositions[8] = vec3[](
     vec3(-0.5, 0.0,  0.5), vec3(-0.5, 0.0, -0.5)
 );
 
+const vec3 screenRectanglePositions[8] = vec3[](
+    vec3(-0.5, -0.5, 0.0), vec3( 0.5, -0.5, 0.0),
+    vec3( 0.5, -0.5, 0.0), vec3( 0.5,  0.5, 0.0),
+    vec3( 0.5,  0.5, 0.0), vec3(-0.5,  0.5, 0.0),
+    vec3(-0.5,  0.5, 0.0), vec3(-0.5, -0.5, 0.0)
+);
+
 const vec3 rayPositions[2] = vec3[](
     vec3(0.0, 0.0, 0.0), vec3(0.0, 0.0, -1.0)
 );
@@ -57,8 +64,11 @@ void main() {
     } else if (pushConstants.shape == 2) {
         position = rayPositions[gl_VertexIndex];
         fragmentColor = pushConstants.color.rgb;
-    } else {
+    } else if (pushConstants.shape == 3) {
         position = boxPositions[gl_VertexIndex];
+        fragmentColor = pushConstants.color.rgb;
+    } else {
+        position = screenRectanglePositions[gl_VertexIndex];
         fragmentColor = pushConstants.color.rgb;
     }
     gl_Position =
