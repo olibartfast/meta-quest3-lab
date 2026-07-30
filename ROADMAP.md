@@ -389,8 +389,9 @@ Each milestone introduces one principal uncertainty:
 
 # Milestone 9 — Quest Camera Capture
 
-**Status:** Planned in `docs/milestone9-plan.md`; implementation has not
-started.
+**Status:** Implemented with host tests and an Android debug build; Quest 3/3S
+permission, visual, lifecycle, long-run, private-fixture, and replay
+acceptance remain pending.
 
 ## Goal
 

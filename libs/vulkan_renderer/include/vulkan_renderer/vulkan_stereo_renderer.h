@@ -15,12 +15,21 @@ enum class DebugLineShape : int32_t {
     Rectangle = 1,
     Ray = 2,
     Box = 3,
+    ScreenRectangle = 4,
 };
 
 struct DebugLineDraw {
     DebugLineShape shape = DebugLineShape::Axes;
     math::Mat4 model = math::IdentityMatrix();
     std::array<float, 4> color = {0.0F, 0.9F, 1.0F, 1.0F};
+};
+
+struct RgbaImageQuad {
+    uint64_t frameId = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::shared_ptr<const std::vector<uint8_t>> pixels;
+    math::Mat4 model = math::IdentityMatrix();
 };
 
 class VulkanSceneProvider {
@@ -30,6 +39,10 @@ public:
     virtual bool BuildScene(
         const XrFrameRenderInfo& frame,
         std::vector<DebugLineDraw>* draws) = 0;
+
+    virtual bool GetRgbaImageQuad(RgbaImageQuad*) {
+        return false;
+    }
 };
 
 struct VulkanRendererOptions {

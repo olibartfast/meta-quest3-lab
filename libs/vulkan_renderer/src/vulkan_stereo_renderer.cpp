@@ -6,6 +6,7 @@
 #include <openxr/openxr_platform.h>
 
 #include <array>
+#include <cstring>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -43,6 +44,14 @@ constexpr uint32_t kDebugLineVertexShader[] =
 #include "debug_lines.vert.inc"
 ;
 
+constexpr uint32_t kImageQuadVertexShader[] =
+#include "image_quad.vert.inc"
+;
+
+constexpr uint32_t kImageQuadFragmentShader[] =
+#include "image_quad.frag.inc"
+;
+
 struct DebugPushConstants {
     math::Mat4 modelViewProjection;
     std::array<float, 4> color{};
@@ -56,6 +65,7 @@ uint32_t DebugVertexCount(DebugLineShape shape) {
         case DebugLineShape::Rectangle: return 8U;
         case DebugLineShape::Ray: return 2U;
         case DebugLineShape::Box: return 24U;
+        case DebugLineShape::ScreenRectangle: return 8U;
     }
     return 0U;
 }
@@ -85,8 +95,21 @@ struct VulkanStereoRenderer::Impl {
     VkCommandPool commandPool = VK_NULL_HANDLE;
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout imageDescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool imageDescriptorPool = VK_NULL_HANDLE;
+    VkDescriptorSet imageDescriptorSet = VK_NULL_HANDLE;
     VkPipeline trianglePipeline = VK_NULL_HANDLE;
     VkPipeline debugLinePipeline = VK_NULL_HANDLE;
+    VkPipeline imageQuadPipeline = VK_NULL_HANDLE;
+    VkImage cameraImage = VK_NULL_HANDLE;
+    VkDeviceMemory cameraImageMemory = VK_NULL_HANDLE;
+    VkImageView cameraImageView = VK_NULL_HANDLE;
+    VkSampler cameraSampler = VK_NULL_HANDLE;
+    uint32_t cameraImageWidth = 0;
+    uint32_t cameraImageHeight = 0;
+    uint64_t uploadedFrameId = 0;
+    RgbaImageQuad frameImage;
+    bool frameHasImage = false;
     VulkanSceneProvider* sceneProvider = nullptr;
     std::vector<DebugLineDraw> frameDraws;
     std::array<EyeSwapchain, 2> eyes;
@@ -292,6 +315,8 @@ struct VulkanStereoRenderer::Impl {
         VkShaderModule triangleVertexModule = VK_NULL_HANDLE;
         VkShaderModule debugLineVertexModule = VK_NULL_HANDLE;
         VkShaderModule fragmentModule = VK_NULL_HANDLE;
+        VkShaderModule imageQuadVertexModule = VK_NULL_HANDLE;
+        VkShaderModule imageQuadFragmentModule = VK_NULL_HANDLE;
         if (!CreateShaderModule(
                 kTriangleVertexShader,
                 sizeof(kTriangleVertexShader),
@@ -303,7 +328,15 @@ struct VulkanStereoRenderer::Impl {
             !CreateShaderModule(
                 kFragmentShader,
                 sizeof(kFragmentShader),
-                &fragmentModule)) {
+                &fragmentModule) ||
+            !CreateShaderModule(
+                kImageQuadVertexShader,
+                sizeof(kImageQuadVertexShader),
+                &imageQuadVertexModule) ||
+            !CreateShaderModule(
+                kImageQuadFragmentShader,
+                sizeof(kImageQuadFragmentShader),
+                &imageQuadFragmentModule)) {
             if (triangleVertexModule != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(
                     context.device, triangleVertexModule, nullptr);
@@ -314,6 +347,14 @@ struct VulkanStereoRenderer::Impl {
             }
             if (fragmentModule != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(context.device, fragmentModule, nullptr);
+            }
+            if (imageQuadVertexModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(
+                    context.device, imageQuadVertexModule, nullptr);
+            }
+            if (imageQuadFragmentModule != VK_NULL_HANDLE) {
+                vkDestroyShaderModule(
+                    context.device, imageQuadFragmentModule, nullptr);
             }
             return false;
         }
@@ -342,17 +383,40 @@ struct VulkanStereoRenderer::Impl {
         VkPushConstantRange pushConstantRange{};
         pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         pushConstantRange.size = sizeof(DebugPushConstants);
+
+        VkDescriptorSetLayoutBinding imageBinding{};
+        imageBinding.binding = 0;
+        imageBinding.descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        imageBinding.descriptorCount = 1;
+        imageBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo descriptorLayoutCreateInfo{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        descriptorLayoutCreateInfo.bindingCount = 1;
+        descriptorLayoutCreateInfo.pBindings = &imageBinding;
+        bool succeeded = CheckVk(
+            vkCreateDescriptorSetLayout(
+                context.device,
+                &descriptorLayoutCreateInfo,
+                nullptr,
+                &imageDescriptorSetLayout),
+            "vkCreateDescriptorSetLayout(camera image)");
+
         VkPipelineLayoutCreateInfo layoutCreateInfo{
             VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         layoutCreateInfo.pushConstantRangeCount = 1;
         layoutCreateInfo.pPushConstantRanges = &pushConstantRange;
-        bool succeeded = CheckVk(
-            vkCreatePipelineLayout(
-                context.device,
-                &layoutCreateInfo,
-                nullptr,
-                &pipelineLayout),
-            "vkCreatePipelineLayout");
+        layoutCreateInfo.setLayoutCount = 1;
+        layoutCreateInfo.pSetLayouts = &imageDescriptorSetLayout;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkCreatePipelineLayout(
+                    context.device,
+                    &layoutCreateInfo,
+                    nullptr,
+                    &pipelineLayout),
+                "vkCreatePipelineLayout");
+        }
 
         VkPipelineVertexInputStateCreateInfo vertexInput{
             VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -431,8 +495,79 @@ struct VulkanStereoRenderer::Impl {
                     &debugLinePipeline),
                 "vkCreateGraphicsPipelines(debug lines)");
         }
+        if (succeeded) {
+            shaderStages[0].module = imageQuadVertexModule;
+            shaderStages[1].module = imageQuadFragmentModule;
+            inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            succeeded = CheckVk(
+                vkCreateGraphicsPipelines(
+                    context.device,
+                    VK_NULL_HANDLE,
+                    1,
+                    &pipelineCreateInfo,
+                    nullptr,
+                    &imageQuadPipeline),
+                "vkCreateGraphicsPipelines(camera image)");
+        }
+
+        VkDescriptorPoolSize descriptorPoolSize{};
+        descriptorPoolSize.type =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorPoolSize.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo descriptorPoolCreateInfo{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        descriptorPoolCreateInfo.maxSets = 1;
+        descriptorPoolCreateInfo.poolSizeCount = 1;
+        descriptorPoolCreateInfo.pPoolSizes = &descriptorPoolSize;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkCreateDescriptorPool(
+                    context.device,
+                    &descriptorPoolCreateInfo,
+                    nullptr,
+                    &imageDescriptorPool),
+                "vkCreateDescriptorPool(camera image)");
+        }
+        VkDescriptorSetAllocateInfo descriptorAllocateInfo{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        descriptorAllocateInfo.descriptorPool = imageDescriptorPool;
+        descriptorAllocateInfo.descriptorSetCount = 1;
+        descriptorAllocateInfo.pSetLayouts = &imageDescriptorSetLayout;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkAllocateDescriptorSets(
+                    context.device,
+                    &descriptorAllocateInfo,
+                    &imageDescriptorSet),
+                "vkAllocateDescriptorSets(camera image)");
+        }
+        VkSamplerCreateInfo samplerCreateInfo{
+            VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samplerCreateInfo.magFilter = VK_FILTER_LINEAR;
+        samplerCreateInfo.minFilter = VK_FILTER_LINEAR;
+        samplerCreateInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        samplerCreateInfo.addressModeU =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCreateInfo.addressModeV =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCreateInfo.addressModeW =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerCreateInfo.maxLod = 1.0F;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkCreateSampler(
+                    context.device,
+                    &samplerCreateInfo,
+                    nullptr,
+                    &cameraSampler),
+                "vkCreateSampler(camera image)");
+        }
 
         vkDestroyShaderModule(context.device, fragmentModule, nullptr);
+        vkDestroyShaderModule(
+            context.device, imageQuadFragmentModule, nullptr);
+        vkDestroyShaderModule(
+            context.device, imageQuadVertexModule, nullptr);
         vkDestroyShaderModule(
             context.device, debugLineVertexModule, nullptr);
         vkDestroyShaderModule(
@@ -512,6 +647,355 @@ struct VulkanStereoRenderer::Impl {
                 }
             }
         }
+        return true;
+    }
+
+    bool FindMemoryType(
+        uint32_t typeBits,
+        VkMemoryPropertyFlags properties,
+        uint32_t* typeIndex) const {
+        if (typeIndex == nullptr) {
+            return false;
+        }
+        VkPhysicalDeviceMemoryProperties memoryProperties{};
+        vkGetPhysicalDeviceMemoryProperties(
+            context.physicalDevice, &memoryProperties);
+        for (uint32_t index = 0;
+             index < memoryProperties.memoryTypeCount;
+             ++index) {
+            if ((typeBits & (1U << index)) != 0U &&
+                (memoryProperties.memoryTypes[index].propertyFlags &
+                    properties) == properties) {
+                *typeIndex = index;
+                return true;
+            }
+        }
+        LogError(
+            "No Vulkan memory type satisfies flags 0x%x",
+            properties);
+        return false;
+    }
+
+    void DestroyCameraImage() {
+        if (context.device == VK_NULL_HANDLE) {
+            return;
+        }
+        if (cameraImageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(context.device, cameraImageView, nullptr);
+            cameraImageView = VK_NULL_HANDLE;
+        }
+        if (cameraImage != VK_NULL_HANDLE) {
+            vkDestroyImage(context.device, cameraImage, nullptr);
+            cameraImage = VK_NULL_HANDLE;
+        }
+        if (cameraImageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(context.device, cameraImageMemory, nullptr);
+            cameraImageMemory = VK_NULL_HANDLE;
+        }
+        cameraImageWidth = 0;
+        cameraImageHeight = 0;
+        uploadedFrameId = 0;
+    }
+
+    bool CreateCameraImage(uint32_t width, uint32_t height) {
+        DestroyCameraImage();
+        VkImageCreateInfo imageCreateInfo{
+            VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageCreateInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageCreateInfo.extent = {width, height, 1};
+        imageCreateInfo.mipLevels = 1;
+        imageCreateInfo.arrayLayers = 1;
+        imageCreateInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageCreateInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageCreateInfo.usage =
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (!CheckVk(
+                vkCreateImage(
+                    context.device,
+                    &imageCreateInfo,
+                    nullptr,
+                    &cameraImage),
+                "vkCreateImage(camera image)")) {
+            return false;
+        }
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(
+            context.device, cameraImage, &requirements);
+        uint32_t memoryTypeIndex = 0;
+        if (!FindMemoryType(
+                requirements.memoryTypeBits,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                &memoryTypeIndex)) {
+            return false;
+        }
+        VkMemoryAllocateInfo allocateInfo{
+            VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocateInfo.allocationSize = requirements.size;
+        allocateInfo.memoryTypeIndex = memoryTypeIndex;
+        if (!CheckVk(
+                vkAllocateMemory(
+                    context.device,
+                    &allocateInfo,
+                    nullptr,
+                    &cameraImageMemory),
+                "vkAllocateMemory(camera image)") ||
+            !CheckVk(
+                vkBindImageMemory(
+                    context.device,
+                    cameraImage,
+                    cameraImageMemory,
+                    0),
+                "vkBindImageMemory(camera image)")) {
+            return false;
+        }
+        VkImageViewCreateInfo viewCreateInfo{
+            VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewCreateInfo.image = cameraImage;
+        viewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewCreateInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewCreateInfo.subresourceRange.aspectMask =
+            VK_IMAGE_ASPECT_COLOR_BIT;
+        viewCreateInfo.subresourceRange.levelCount = 1;
+        viewCreateInfo.subresourceRange.layerCount = 1;
+        if (!CheckVk(
+                vkCreateImageView(
+                    context.device,
+                    &viewCreateInfo,
+                    nullptr,
+                    &cameraImageView),
+                "vkCreateImageView(camera image)")) {
+            return false;
+        }
+        cameraImageWidth = width;
+        cameraImageHeight = height;
+        return true;
+    }
+
+    bool UploadCameraImage(const RgbaImageQuad& image) {
+        if (image.pixels == nullptr || image.width == 0 ||
+            image.height == 0) {
+            return false;
+        }
+        const VkDeviceSize byteCount =
+            static_cast<VkDeviceSize>(image.width) *
+            static_cast<VkDeviceSize>(image.height) * 4U;
+        if (image.pixels->size() != byteCount) {
+            LogError(
+                "Camera image byte count %zu does not match %ux%u RGBA",
+                image.pixels->size(),
+                image.width,
+                image.height);
+            return false;
+        }
+        if (cameraImage == VK_NULL_HANDLE ||
+            cameraImageWidth != image.width ||
+            cameraImageHeight != image.height) {
+            if (!CheckVk(
+                    vkDeviceWaitIdle(context.device),
+                    "vkDeviceWaitIdle(camera resize)") ||
+                !CreateCameraImage(image.width, image.height)) {
+                return false;
+            }
+        }
+
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        VkBufferCreateInfo bufferCreateInfo{
+            VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferCreateInfo.size = byteCount;
+        bufferCreateInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufferCreateInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (!CheckVk(
+                vkCreateBuffer(
+                    context.device,
+                    &bufferCreateInfo,
+                    nullptr,
+                    &stagingBuffer),
+                "vkCreateBuffer(camera staging)")) {
+            return false;
+        }
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(
+            context.device, stagingBuffer, &requirements);
+        uint32_t memoryTypeIndex = 0;
+        bool succeeded = FindMemoryType(
+            requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &memoryTypeIndex);
+        VkMemoryAllocateInfo allocateInfo{
+            VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocateInfo.allocationSize = requirements.size;
+        allocateInfo.memoryTypeIndex = memoryTypeIndex;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkAllocateMemory(
+                    context.device,
+                    &allocateInfo,
+                    nullptr,
+                    &stagingMemory),
+                "vkAllocateMemory(camera staging)");
+        }
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkBindBufferMemory(
+                    context.device, stagingBuffer, stagingMemory, 0),
+                "vkBindBufferMemory(camera staging)");
+        }
+        void* mapped = nullptr;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkMapMemory(
+                    context.device,
+                    stagingMemory,
+                    0,
+                    byteCount,
+                    0,
+                    &mapped),
+                "vkMapMemory(camera staging)");
+        }
+        if (succeeded) {
+            std::memcpy(mapped, image.pixels->data(), image.pixels->size());
+            vkUnmapMemory(context.device, stagingMemory);
+        }
+
+        VkCommandBuffer uploadCommand = VK_NULL_HANDLE;
+        VkCommandBufferAllocateInfo commandAllocateInfo{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        commandAllocateInfo.commandPool = commandPool;
+        commandAllocateInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        commandAllocateInfo.commandBufferCount = 1;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkAllocateCommandBuffers(
+                    context.device,
+                    &commandAllocateInfo,
+                    &uploadCommand),
+                "vkAllocateCommandBuffers(camera upload)");
+        }
+        VkCommandBufferBeginInfo beginInfo{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (succeeded) {
+            succeeded = CheckVk(
+                vkBeginCommandBuffer(uploadCommand, &beginInfo),
+                "vkBeginCommandBuffer(camera upload)");
+        }
+        if (succeeded) {
+            VkImageMemoryBarrier toTransfer{
+                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            toTransfer.srcAccessMask =
+                uploadedFrameId == 0 ? 0 : VK_ACCESS_SHADER_READ_BIT;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toTransfer.oldLayout =
+                uploadedFrameId == 0
+                    ? VK_IMAGE_LAYOUT_UNDEFINED
+                    : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = cameraImage;
+            toTransfer.subresourceRange.aspectMask =
+                VK_IMAGE_ASPECT_COLOR_BIT;
+            toTransfer.subresourceRange.levelCount = 1;
+            toTransfer.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(
+                uploadCommand,
+                uploadedFrameId == 0
+                    ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                    : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &toTransfer);
+            VkBufferImageCopy copy{};
+            copy.imageSubresource.aspectMask =
+                VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = {image.width, image.height, 1};
+            vkCmdCopyBufferToImage(
+                uploadCommand,
+                stagingBuffer,
+                cameraImage,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1,
+                &copy);
+            VkImageMemoryBarrier toShader{
+                VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            toShader.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toShader.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toShader.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toShader.newLayout =
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toShader.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toShader.image = cameraImage;
+            toShader.subresourceRange = toTransfer.subresourceRange;
+            vkCmdPipelineBarrier(
+                uploadCommand,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                nullptr,
+                0,
+                nullptr,
+                1,
+                &toShader);
+            succeeded = CheckVk(
+                vkEndCommandBuffer(uploadCommand),
+                "vkEndCommandBuffer(camera upload)");
+        }
+        if (succeeded) {
+            VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &uploadCommand;
+            succeeded = CheckVk(
+                vkQueueSubmit(
+                    context.queue, 1, &submitInfo, VK_NULL_HANDLE),
+                "vkQueueSubmit(camera upload)") &&
+                CheckVk(
+                    vkQueueWaitIdle(context.queue),
+                    "vkQueueWaitIdle(camera upload)");
+        }
+        if (uploadCommand != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(
+                context.device, commandPool, 1, &uploadCommand);
+        }
+        if (stagingBuffer != VK_NULL_HANDLE) {
+            vkDestroyBuffer(context.device, stagingBuffer, nullptr);
+        }
+        if (stagingMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(context.device, stagingMemory, nullptr);
+        }
+        if (!succeeded) {
+            return false;
+        }
+
+        VkDescriptorImageInfo descriptorImageInfo{};
+        descriptorImageInfo.sampler = cameraSampler;
+        descriptorImageInfo.imageView = cameraImageView;
+        descriptorImageInfo.imageLayout =
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{
+            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = imageDescriptorSet;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &descriptorImageInfo;
+        vkUpdateDescriptorSets(
+            context.device, 1, &write, 0, nullptr);
+        uploadedFrameId = image.frameId;
         return true;
     }
 
@@ -627,6 +1111,31 @@ struct VulkanStereoRenderer::Impl {
                 modelViewProjection.values.data());
             vkCmdDraw(resource.commandBuffer, 3, 1, 0, 0);
         } else {
+            if (frameHasImage && cameraImage != VK_NULL_HANDLE) {
+                const math::Mat4 modelViewProjection =
+                    math::Multiply(viewProjection, frameImage.model);
+                vkCmdBindPipeline(
+                    resource.commandBuffer,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    imageQuadPipeline);
+                vkCmdBindDescriptorSets(
+                    resource.commandBuffer,
+                    VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    pipelineLayout,
+                    0,
+                    1,
+                    &imageDescriptorSet,
+                    0,
+                    nullptr);
+                vkCmdPushConstants(
+                    resource.commandBuffer,
+                    pipelineLayout,
+                    VK_SHADER_STAGE_VERTEX_BIT,
+                    0,
+                    sizeof(math::Mat4),
+                    modelViewProjection.values.data());
+                vkCmdDraw(resource.commandBuffer, 6, 1, 0, 0);
+            }
             vkCmdBindPipeline(
                 resource.commandBuffer,
                 VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -762,10 +1271,20 @@ struct VulkanStereoRenderer::Impl {
         }
         *layer = nullptr;
         frameDraws.clear();
+        frameHasImage = false;
         if (sceneProvider != nullptr &&
             !sceneProvider->BuildScene(frame, &frameDraws)) {
             LogError("Vulkan scene provider failed");
             return false;
+        }
+        if (sceneProvider != nullptr &&
+            sceneProvider->GetRgbaImageQuad(&frameImage)) {
+            if (frameImage.frameId != uploadedFrameId &&
+                !UploadCameraImage(frameImage)) {
+                LogError("Camera image upload failed");
+                return false;
+            }
+            frameHasImage = cameraImage != VK_NULL_HANDLE;
         }
         for (uint32_t eyeIndex = 0; eyeIndex < eyes.size(); ++eyeIndex) {
             if (!RenderEye(
@@ -829,6 +1348,23 @@ struct VulkanStereoRenderer::Impl {
             }
         }
         if (context.device != VK_NULL_HANDLE) {
+            DestroyCameraImage();
+            if (cameraSampler != VK_NULL_HANDLE) {
+                vkDestroySampler(
+                    context.device, cameraSampler, nullptr);
+                cameraSampler = VK_NULL_HANDLE;
+            }
+            if (imageDescriptorPool != VK_NULL_HANDLE) {
+                vkDestroyDescriptorPool(
+                    context.device, imageDescriptorPool, nullptr);
+                imageDescriptorPool = VK_NULL_HANDLE;
+                imageDescriptorSet = VK_NULL_HANDLE;
+            }
+            if (imageQuadPipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(
+                    context.device, imageQuadPipeline, nullptr);
+                imageQuadPipeline = VK_NULL_HANDLE;
+            }
             if (debugLinePipeline != VK_NULL_HANDLE) {
                 vkDestroyPipeline(
                     context.device, debugLinePipeline, nullptr);
@@ -844,6 +1380,13 @@ struct VulkanStereoRenderer::Impl {
                     context.device, pipelineLayout, nullptr);
                 pipelineLayout = VK_NULL_HANDLE;
             }
+            if (imageDescriptorSetLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(
+                    context.device,
+                    imageDescriptorSetLayout,
+                    nullptr);
+                imageDescriptorSetLayout = VK_NULL_HANDLE;
+            }
             if (renderPass != VK_NULL_HANDLE) {
                 vkDestroyRenderPass(context.device, renderPass, nullptr);
                 renderPass = VK_NULL_HANDLE;
@@ -857,6 +1400,8 @@ struct VulkanStereoRenderer::Impl {
         initialized = false;
         colorFormat = VK_FORMAT_UNDEFINED;
         frameDraws.clear();
+        frameImage = {};
+        frameHasImage = false;
         sceneProvider = nullptr;
         transparentBackground = false;
         context = {};
