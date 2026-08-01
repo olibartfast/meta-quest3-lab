@@ -659,6 +659,18 @@ The repository demonstrates clean native architecture, repeatable builds, measur
 
 ---
 
+# Milestone 16 — Stereo Capability Probe
+
+**Status:** Implemented and measured on Quest 3. Verdict:
+`PASS_WITH_DEBT`. Concurrent topology, capture, timestamp skew, and exposure
+passed; per-device calibration, optical synchronization validation, and
+Camera2-to-OpenXR time correlation remain explicit debt.
+
+The pixel-free report, measured values, and downstream design decision are
+recorded in `docs/stereo-capability.md`.
+
+---
+
 # Recommended Execution Order
 
 1. Stabilize build and deployment.
