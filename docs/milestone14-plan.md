@@ -1,5 +1,12 @@
 # Milestone 14 — RF-DETR Spatial Overlay
 
+> **Blocked for redesign after Milestone 16:** do not implement the box-only
+> Environment Depth fusion below as the production path. If the per-device
+> calibration and optical-sync follow-up passes, revise this milestone around
+> depth from the exact stereo pair seen by RF-DETR plus object isolation. The
+> existing text is retained as a rejected/alternative design record until that
+> gate completes. See `docs/stereo-capability.md`.
+
 ## Goal
 
 Fuse live, frame-correlated RF-DETR boxes with aligned Quest environment depth
