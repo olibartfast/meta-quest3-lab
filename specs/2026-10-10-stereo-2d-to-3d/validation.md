@@ -23,7 +23,7 @@ A tick with no number is not a result.
 |---|---|---|---|
 | V-1 | 300+ pairs, unmatched <1% | `pull` report numbers | `[x]` 320 matched / 300 req, 0+0 unmatched, 49.53 pairs/s, skew med 0ns p95 2µs max 3µs, 2026-10-10 |
 | V-2 | No handle leak | 3 cycles, `Image`/camera clean | `[ ]` |
-| V-3 | Host fixture range | deterministic ±tolerance | `[ ]` tape surfaces ___ |
+| V-3 | Host fixture range | deterministic ±tolerance | `[x]` `stereo_depth_tests` PASS 2026-10-10: 3072/3072 exact d=12, range 4.63452m (fx866.4×B0.06419), flat→0 valid, malformed rejected |
 | V-4 | Tape range error | per-standoff mean/max recorded | `[ ]` |
 
 ## Fusion (Group 3 → R-4/R-5/R-6/R-7/R-8)
