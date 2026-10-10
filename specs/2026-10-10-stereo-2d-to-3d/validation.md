@@ -10,7 +10,7 @@ A tick with no number is not a result.
 
 | # | Check | Expected | Result |
 |---|---|---|---|
-| V-0a | API model persisted + checksummed | artifact + SHA, device+config key | `[ ]` |
+| V-0a | API model persisted + checksummed | artifact + SHA, device+config key | `[x]` `build/stereo-calibration/stereo-calibration-eureka-640x480.json` sha `099103ca…8a5247b`, baseline 0.06384 m, 2026-10-10 host-only from 2026-08-01 probe report; fresh-device pull pending |
 | V-0b | Straight-line residuals | ≤1.0 px p95 natural edges | `[ ]` |
 | V-0c | Baseline vs tape | \|API−tape\| ≤5 mm | `[ ]` |
 | V-0d | Rectified vertical disparity | bound recorded, p95 ≤2 px | `[ ]` |
