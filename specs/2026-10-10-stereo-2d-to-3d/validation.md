@@ -10,7 +10,7 @@ A tick with no number is not a result.
 
 | # | Check | Expected | Result |
 |---|---|---|---|
-| V-0a | API model persisted + checksummed | artifact + SHA, device+config key | `[x]` `build/stereo-calibration/stereo-calibration-eureka-640x480.json` sha `099103ca…8a5247b`, baseline 0.06384 m, 2026-10-10 host-only from 2026-08-01 probe report; fresh-device pull pending |
+| V-0a | API model persisted + checksummed | artifact + SHA, device+config key | `[x]` fresh 2026-10-10 2D-panel run: `stereo-calibration-eureka-640x480.json` sha `22da3ae2…00db9b74`, baseline 0.06419 m, fp `…52433670048800520`; probe verdict `PASS_WITH_DEBT` (P1B+P3O open) |
 | V-0b | Straight-line residuals | ≤1.0 px p95 natural edges | `[ ]` |
 | V-0c | Baseline vs tape | \|API−tape\| ≤5 mm | `[ ]` |
 | V-0d | Rectified vertical disparity | bound recorded, p95 ≤2 px | `[ ]` |
@@ -21,7 +21,7 @@ A tick with no number is not a result.
 
 | # | Check | Expected | Result |
 |---|---|---|---|
-| V-1 | 300+ pairs, unmatched <1% | `pull` report numbers | `[ ]` |
+| V-1 | 300+ pairs, unmatched <1% | `pull` report numbers | `[x]` 320 matched / 300 req, 0+0 unmatched, 49.53 pairs/s, skew med 0ns p95 2µs max 3µs, 2026-10-10 |
 | V-2 | No handle leak | 3 cycles, `Image`/camera clean | `[ ]` |
 | V-3 | Host fixture range | deterministic ±tolerance | `[ ]` tape surfaces ___ |
 | V-4 | Tape range error | per-standoff mean/max recorded | `[ ]` |
