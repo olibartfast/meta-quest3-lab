@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <vector>
 
 namespace {
@@ -250,6 +251,253 @@ int main() {
         passed &= Expect(
             std::fabs(prior.halfExtents.x - measured.halfExtents.x) < 1.0e-4F,
             "lateral extents must remain measured");
+    }
+
+    // R-7 provenance: FuseDetection leaves Prior (hide sentinel) on success;
+    // the caller overwrites after CheckAgreement. Failure also leaves Prior.
+    {
+        std::vector<questlab::math::Vec3> points;
+        AddSlab(&points, 2.0F, 0.15F, 0.15F, 10);
+        questlab::fusion::FusedBox box;
+        box.rangeSource = questlab::fusion::RangeSource::Stereo;
+        std::string reason;
+        passed &= Expect(
+            questlab::fusion::FuseDetection(
+                frustum, points, parameters, {}, &box, &reason),
+            "provenance fusion must succeed");
+        passed &= Expect(
+            box.rangeSource == questlab::fusion::RangeSource::Prior,
+            "FuseDetection success must reset rangeSource to Prior");
+    }
+    {
+        questlab::fusion::FusedBox box;
+        box.rangeSource = questlab::fusion::RangeSource::Stereo;
+        std::string reason;
+        passed &= Expect(
+            !questlab::fusion::FuseDetection(
+                frustum, {}, parameters, {}, &box, &reason),
+            "empty fusion must fail");
+        passed &= Expect(
+            box.rangeSource == questlab::fusion::RangeSource::Prior,
+            "FuseDetection failure must leave a defined Prior source");
+        passed &= Expect(!reason.empty(), "failure must carry a reason");
+    }
+    {
+        const questlab::fusion::FusedBox box;
+        passed &= Expect(
+            box.rangeSource == questlab::fusion::RangeSource::Prior,
+            "default FusedBox rangeSource must be Prior");
+    }
+
+    // R-6 agreement gate: tolerance = toleranceMeters + toleranceRatio * min.
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        const questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                true, 2.0F, true, 2.05F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::AgreeStereo,
+            "agreeing ranges must return AgreeStereo");
+        passed &= Expect(
+            source == questlab::fusion::RangeSource::Stereo,
+            "agreeing ranges must select Stereo");
+    }
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        const questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                true, 2.0F, true, 3.0F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::Hide,
+            "disagreeing ranges must hide");
+    }
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        const questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                true, 1.5F, false, 0.0F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::AgreeStereo,
+            "stereo-only must return AgreeStereo");
+        passed &= Expect(
+            source == questlab::fusion::RangeSource::Stereo,
+            "stereo-only must select Stereo");
+    }
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        const questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                false, 0.0F, true, 1.5F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::FallbackEnv,
+            "env-only must return FallbackEnv");
+        passed &= Expect(
+            source == questlab::fusion::RangeSource::EnvDepthFallback,
+            "env-only must select EnvDepthFallback");
+    }
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Stereo;
+        const questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                false, 0.0F, false, 0.0F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::Hide,
+            "neither-valid must hide");
+        passed &= Expect(
+            source == questlab::fusion::RangeSource::Prior,
+            "neither-valid must select Prior");
+    }
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        const questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                true, 2.0F, true, 2.30F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::AgreeStereo,
+            "delta at tolerance boundary must agree");
+    }
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        questlab::fusion::AgreementVerdict verdict =
+            questlab::fusion::CheckAgreement(
+                true, 0.0F, true, 2.0F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::FallbackEnv,
+            "non-positive stereo must fall back to env");
+        verdict = questlab::fusion::CheckAgreement(
+            true, nan, false, 0.0F, 0.10F, 0.10F, &source);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::Hide,
+            "NaN stereo alone must hide");
+        passed &= Expect(
+            source == questlab::fusion::RangeSource::Prior,
+            "NaN stereo alone must select Prior");
+        verdict = questlab::fusion::CheckAgreement(
+            true, 1.0F, false, 0.0F, 0.10F, 0.10F, nullptr);
+        passed &= Expect(
+            verdict == questlab::fusion::AgreementVerdict::AgreeStereo,
+            "null selectedSource must still return a verdict");
+    }
+
+    // StereoRangeToPoints: Camera2 (+Z forward, +Y down) flips to LOCAL
+    // (-Z forward, +Y up): x=(u-cx)*r/fx, y=-((v-cy)*r/fy), z=-r.
+    {
+        const int32_t width = 2;
+        const int32_t height = 2;
+        const float fx = 100.0F;
+        const float fy = 200.0F;
+        const float cx = 0.5F;
+        const float cy = 0.5F;
+        const std::vector<float> range = {1.0F, 2.0F, 3.0F, 4.0F};
+        std::vector<questlab::math::Vec3> points;
+        std::string reason;
+        passed &= Expect(
+            questlab::fusion::StereoRangeToPoints(
+                range, width, height, fx, fy, cx, cy, &points, &reason),
+            reason.empty() ? "range to points must succeed" : reason.c_str());
+        passed &= Expect(points.size() == 4U, "all valid ranges must emit");
+        if (points.size() == 4U) {
+            passed &= Expect(
+                std::fabs(points[0].x + 0.005F) < 1.0e-6F &&
+                    std::fabs(points[0].y - 0.0025F) < 1.0e-6F &&
+                    std::fabs(points[0].z + 1.0F) < 1.0e-6F,
+                "pixel (0,0) flip must match pinhole model");
+            passed &= Expect(
+                std::fabs(points[1].x - 0.01F) < 1.0e-6F &&
+                    std::fabs(points[1].y - 0.005F) < 1.0e-6F &&
+                    std::fabs(points[1].z + 2.0F) < 1.0e-6F,
+                "pixel (1,0) flip must match pinhole model");
+            passed &= Expect(
+                std::fabs(points[2].x + 0.015F) < 1.0e-6F &&
+                    std::fabs(points[2].y + 0.0075F) < 1.0e-6F &&
+                    std::fabs(points[2].z + 3.0F) < 1.0e-6F,
+                "pixel (0,1) flip must match pinhole model");
+            passed &= Expect(
+                std::fabs(points[3].x - 0.02F) < 1.0e-6F &&
+                    std::fabs(points[3].y + 0.01F) < 1.0e-6F &&
+                    std::fabs(points[3].z + 4.0F) < 1.0e-6F,
+                "pixel (1,1) flip must match pinhole model");
+        }
+    }
+    {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        const float inf = std::numeric_limits<float>::infinity();
+        const std::vector<float> range = {2.0F, 0.0F, -1.0F, nan, inf, 3.0F};
+        std::vector<questlab::math::Vec3> points;
+        std::string reason;
+        passed &= Expect(
+            questlab::fusion::StereoRangeToPoints(
+                range, 6, 1, 100.0F, 100.0F, 3.0F, 0.0F, &points, &reason),
+            "invalid ranges must be skipped, not fail");
+        passed &= Expect(
+            points.size() == 2U, "only two valid ranges must emit");
+        if (points.size() == 2U) {
+            passed &= Expect(
+                std::fabs(points[0].z + 2.0F) < 1.0e-6F &&
+                    std::fabs(points[1].z + 3.0F) < 1.0e-6F,
+                "valid points must keep their ranges");
+            for (const auto& point : points) {
+                passed &= Expect(
+                    !(point.x == 0.0F && point.y == 0.0F &&
+                        point.z == 0.0F),
+                    "invalid must never become a zero point");
+            }
+        }
+    }
+    {
+        std::vector<questlab::math::Vec3> points;
+        std::string reason;
+        passed &= Expect(
+            !questlab::fusion::StereoRangeToPoints(
+                std::vector<float>{1.0F, 2.0F}, 2, 2, 100.0F, 100.0F, 1.0F,
+                1.0F, &points, &reason),
+            "size mismatch must fail");
+        passed &= Expect(
+            !reason.empty(), "size mismatch must carry a reason");
+        reason.clear();
+        passed &= Expect(
+            !questlab::fusion::StereoRangeToPoints(
+                std::vector<float>{1.0F}, 1, 1, 100.0F, 100.0F, 0.0F, 0.0F,
+                nullptr, &reason),
+            "null output must fail");
+        passed &= Expect(!reason.empty(), "null output must carry a reason");
+    }
+    {
+        std::vector<questlab::math::Vec3> points;
+        std::string reason;
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        passed &= Expect(
+            !questlab::fusion::StereoRangeToPoints(
+                std::vector<float>{1.0F}, 1, 1, 0.0F, 100.0F, 0.0F, 0.0F,
+                &points, &reason),
+            "zero fx must fail");
+        passed &= Expect(!reason.empty(), "zero fx must carry a reason");
+        reason.clear();
+        passed &= Expect(
+            !questlab::fusion::StereoRangeToPoints(
+                std::vector<float>{1.0F}, 1, 1, 100.0F, -5.0F, 0.0F, 0.0F,
+                &points, &reason),
+            "negative fy must fail");
+        reason.clear();
+        passed &= Expect(
+            !questlab::fusion::StereoRangeToPoints(
+                std::vector<float>{1.0F}, 1, 1, nan, 100.0F, 0.0F, 0.0F,
+                &points, &reason),
+            "NaN fx must fail");
+        reason.clear();
+        passed &= Expect(
+            !questlab::fusion::StereoRangeToPoints(
+                std::vector<float>{1.0F}, 0, 1, 100.0F, 100.0F, 0.0F, 0.0F,
+                &points, &reason),
+            "zero width must fail");
     }
 
     if (passed) {
