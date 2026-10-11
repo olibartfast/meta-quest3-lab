@@ -31,8 +31,12 @@ Phases 2–5 (gate → stereo depth → time/pose registration → metric overla
 start before the P1B+P3O gate passes. This slice prototypes anyway while the
 gate runs. If the gate verdict is Fail, the stereo prototype is dropped and the
 slice falls back to the env-depth fusion app 10 already ships, per
-`docs/stereo-capability.md`. Prototype code stays isolated behind a config flag
-so deletion is one revert.
+`docs/stereo-capability.md`. Shipped as always-on env-path provenance in app 10
+(see V-18): every env-depth box now carries `rangeSource=EnvDepthFallback`,
+`confidence ×0.7`, and an amber tint, with `env_fallback` logged. There is no
+`--stereo-prototype` flag; revert is a git revert of the app-10 wiring, and the
+rendering/confidence change versus prior app-10 behavior stays flagged as
+pending device comparison until V-8/V-18 pass on headset.
 
 ## Functional requirements
 

@@ -253,6 +253,7 @@ struct PipelineSnapshot {
     uint64_t projectionFailures = 0;
     uint64_t fusionFailures = 0;
     uint64_t fusedBoxes = 0;
+    uint64_t fusedEnvFallback = 0;
     uint64_t depthFramesConsumed = 0;
     size_t depthPointCount = 0;
 };
@@ -614,10 +615,48 @@ private:
                     SizePriorForClass(detection.className),
                     &object.box,
                     &boxReason)) {
-                object.hasBox = true;
-                ++fusedBoxes_;
+                // No stereo live feed on device yet (Group 1 capture pending),
+                // so every fused box is env-depth-only: stereo is invalid and
+                // the env range is the fused representative range. R-7.
+                questlab::fusion::RangeSource source =
+                    questlab::fusion::RangeSource::Prior;
+                const questlab::fusion::AgreementVerdict verdict =
+                    questlab::fusion::CheckAgreement(
+                        /*stereoValid=*/false,
+                        0.0F,
+                        /*envValid=*/true,
+                        object.box.representativeRangeMeters,
+                        0.10F,
+                        0.10F,
+                        &source);
+                object.box.rangeSource = source;
+                if (verdict == questlab::fusion::AgreementVerdict::Hide) {
+                    // Defensive: env-only with a valid range always falls back,
+                    // so Hide means the fused range was non-positive or
+                    // non-finite. FuseDetection leaves boxReason empty on
+                    // success, hence the fallback message.
+                    object.hasBox = false;
+                    object.boxRejection = boxReason.empty()
+                        ? std::string("Agreement hid env-only box")
+                        : boxReason;
+                    ++fusionFailures_;
+                } else {
+                    object.hasBox = true;
+                    if (verdict ==
+                        questlab::fusion::AgreementVerdict::FallbackEnv) {
+                        // Degraded fallback: only the confidence is discounted.
+                        // Representative range, centre, and extents stay as
+                        // fused so the box is flagged, not relocated.
+                        object.box.confidence *= 0.7F;
+                        ++fusedEnvFallback_;
+                    }
+                    ++fusedBoxes_;
+                }
             } else {
+                object.hasBox = false;
                 object.boxRejection = boxReason;
+                // FuseDetection leaves rangeSource at the Prior sentinel on
+                // failure; hasBox=false covers it so it never renders.
                 ++fusionFailures_;
             }
             prepared->objects.push_back(std::move(object));
@@ -723,6 +762,7 @@ private:
         snapshot_.projectionFailures = projectionFailures_;
         snapshot_.fusionFailures = fusionFailures_;
         snapshot_.fusedBoxes = fusedBoxes_;
+        snapshot_.fusedEnvFallback = fusedEnvFallback_;
         snapshot_.depthFramesConsumed = depthFramesConsumed_;
         snapshot_.depthPointCount = depthPointsInLocal_.size();
     }
@@ -745,6 +785,7 @@ private:
     int32_t depthSampleStride_ = 1;
     uint64_t fusionFailures_ = 0;
     uint64_t fusedBoxes_ = 0;
+    uint64_t fusedEnvFallback_ = 0;
     uint64_t depthFramesConsumed_ = 0;
     int64_t lastDepthReportNanoseconds_ = 0;
     uint64_t dispatchOverwrites_ = 0;
@@ -967,6 +1008,19 @@ public:
                     if (fused.depthExtentIsAssumed) {
                         boxColor[2] = 0.55F * ageBrightness;
                     }
+                    // R-7 fallback provenance: env-depth boxes render amber,
+                    // distinct from the green measured color stereo keeps.
+                    if (fused.rangeSource ==
+                        questlab::fusion::RangeSource::EnvDepthFallback) {
+                        boxColor = {
+                            1.0F * ageBrightness,
+                            0.65F * ageBrightness,
+                            0.10F * ageBrightness,
+                            1.0F,
+                        };
+                    }
+                    // RangeSource::Prior must never render: it is the
+                    // unset/hide sentinel and hasBox=false covers it.
                     draws->push_back({
                         questlab::DebugLineShape::Box,
                         questlab::math::Multiply(
@@ -1040,7 +1094,8 @@ private:
         const auto& stats = snapshot.detectorStats;
         questlab::LogInfo(
             "RFDETR status backend=%s health=%s prepared=%s "
-            "boxes=%llu fusion_fail=%llu depth_frames=%llu depth_points=%zu "
+            "boxes=%llu fusion_fail=%llu env_fallback=%llu "
+            "depth_frames=%llu depth_points=%zu "
             "submitted=%llu completed=%llu pending_drop=%llu rate_drop=%llu "
             "dispatch_drop=%llu unmatched=%llu expired=%llu projection_fail=%llu "
             "error=%s",
@@ -1049,6 +1104,7 @@ private:
             preparedValid ? "visible" : "none",
             static_cast<unsigned long long>(snapshot.fusedBoxes),
             static_cast<unsigned long long>(snapshot.fusionFailures),
+            static_cast<unsigned long long>(snapshot.fusedEnvFallback),
             static_cast<unsigned long long>(snapshot.depthFramesConsumed),
             snapshot.depthPointCount,
             static_cast<unsigned long long>(stats.submittedFrames),

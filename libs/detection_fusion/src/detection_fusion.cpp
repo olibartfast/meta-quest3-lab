@@ -162,6 +162,8 @@ bool FuseDetection(
     if (box == nullptr) {
         return fail("Output box is null");
     }
+    // FuseDetection is range-agnostic: success and failure both leave Prior (hide sentinel) unless the caller overwrites after CheckAgreement.
+    box->rangeSource = RangeSource::Prior;
     if (parameters.clusterToleranceMeters <= 0.0F ||
         parameters.maximumRangeMeters <= parameters.minimumRangeMeters) {
         return fail("Fusion parameters are invalid");
@@ -261,9 +263,16 @@ bool FuseDetection(
     if (cluster.size() < parameters.minimumSampleCount) {
         return fail("Dominant cluster is too small");
     }
-    if (inlierRatio < parameters.minimumInlierRatio) {
-        return fail("Dominant cluster is not dominant enough");
-    }
+    // Intentionally no minimumInlierRatio gate here: pass two already
+    // requires the nearest window to hold supportThreshold samples
+    // (max(minimumSampleCount, foregroundSampleShare * N)), so an extra
+    // share-of-frustum floor duplicates that check and contradicts the
+    // occlusion-order rule (nearest substantial surface wins). A small near
+    // object in front of a dense wall is legitimately a small fraction of
+    // the frustum yet must still succeed; scattered noise cannot pass
+    // supportThreshold because it does not cluster within
+    // clusterToleranceMeters.
+    (void)parameters.minimumInlierRatio;
 
     // Orientation: yaw about the up axis, taken from the centre bearing
     // flattened onto the horizontal plane. Depth from a single viewpoint sees
@@ -370,6 +379,7 @@ bool FuseDetection(
     box->halfExtents = {halfRight, halfUp, halfDepth};
     box->depthExtentIsAssumed = depthAssumed;
     box->orientationIsMeasured = orientationMeasured;
+    box->rangeSource = RangeSource::Prior;
     box->planeInlierRatio = orientationMeasured
         ? static_cast<float>(cluster.size()) /
               static_cast<float>(std::max<size_t>(1U, inside.size()))
@@ -387,6 +397,88 @@ bool FuseDetection(
         1.0F);
     if (reason != nullptr) {
         reason->clear();
+    }
+    return true;
+}
+
+AgreementVerdict CheckAgreement(
+    bool stereoValid,
+    float stereoRangeMeters,
+    bool envValid,
+    float envRangeMeters,
+    float toleranceMeters,
+    float toleranceRatio,
+    RangeSource* selectedSource) {
+    const auto select = [&](RangeSource source) {
+        if (selectedSource != nullptr) {
+            *selectedSource = source;
+        }
+    };
+    if (stereoValid && std::isfinite(stereoRangeMeters) && stereoRangeMeters > 0.0F) {
+        if (envValid && std::isfinite(envRangeMeters) && envRangeMeters > 0.0F) {
+            const float delta = std::fabs(stereoRangeMeters - envRangeMeters);
+            const float allowed = toleranceMeters +
+                                  toleranceRatio * std::min(stereoRangeMeters, envRangeMeters);
+            if (delta <= allowed) {
+                select(RangeSource::Stereo);
+                return AgreementVerdict::AgreeStereo;
+            }
+            select(RangeSource::Stereo);
+            return AgreementVerdict::Hide;
+        }
+        select(RangeSource::Stereo);
+        return AgreementVerdict::AgreeStereo;
+    }
+    if (envValid && std::isfinite(envRangeMeters) && envRangeMeters > 0.0F) {
+        select(RangeSource::EnvDepthFallback);
+        return AgreementVerdict::FallbackEnv;
+    }
+    select(RangeSource::Prior);
+    return AgreementVerdict::Hide;
+}
+
+bool StereoRangeToPoints(
+    const std::vector<float>& rangeMeters,
+    int32_t width,
+    int32_t height,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
+    std::vector<math::Vec3>* pointsInLocal,
+    std::string* reason) {
+    const auto fail = [&](const char* message) {
+        if (reason != nullptr) {
+            *reason = message;
+        }
+        return false;
+    };
+    if (pointsInLocal == nullptr) {
+        return fail("null output");
+    }
+    if (width <= 0 || height <= 0 || !std::isfinite(fx) ||
+        !std::isfinite(fy) || !std::isfinite(cx) || !std::isfinite(cy) ||
+        fx <= 0.0F || fy <= 0.0F) {
+        return fail("invalid image or intrinsics");
+    }
+    if (rangeMeters.size() != static_cast<size_t>(width) * static_cast<size_t>(height)) {
+        return fail("range/image size mismatch");
+    }
+    pointsInLocal->clear();
+    pointsInLocal->reserve(rangeMeters.size() / 4);
+    for (int32_t v = 0; v < height; ++v) {
+        for (int32_t u = 0; u < width; ++u) {
+            const float range =
+                rangeMeters[static_cast<size_t>(v) * static_cast<size_t>(width) + static_cast<size_t>(u)];
+            if (!std::isfinite(range) || range <= 0.0F) {
+                continue;
+            }
+            // Camera2 pinhole (+Z forward, +Y down) then half-turn about X
+            // into LOCAL (-Z forward, +Y up): (x, y, z) -> (x, -y, -z).
+            const float xCam = (static_cast<float>(u) - cx) * range / fx;
+            const float yCam = (static_cast<float>(v) - cy) * range / fy;
+            pointsInLocal->push_back({xCam, -yCam, -range});
+        }
     }
     return true;
 }

@@ -3,7 +3,7 @@
 Fill **Result** as evidence lands. `[x]` passed · `[ ]` not run · `[!]` failed.
 A tick with no number is not a result.
 
-**Revision:** `agent/stereo-2d-to-3d` based on `fbad8aa`
+**Revision:** `agent/stereo-2d-to-3d` based on `5114eab` (+ working tree: fusion provenance lib + app-10 agreement wiring)
 **Host date:** 2026-10-10 · **Headset:** `2G0YC5ZH0K0293` (available, not yet run)
 
 ## Gate (Group 0 → R-2)
@@ -30,10 +30,10 @@ A tick with no number is not a result.
 
 | # | Check | Command / probe | Result |
 |---|---|---|---|
-| V-5 | Correlation rejects | stale/distant/mismatched hidden, counters rise | `[ ]` |
-| V-6 | Empty clears | valid-empty → no boxes | `[ ]` |
-| V-7 | Agreement gate | stereo↔env Δ within 0.10 m/10% or hidden; rate ___ | `[ ]` |
-| V-8 | Fallback provenance | env-depth boxes flagged, tinted, lower confidence | `[ ]` |
+| V-5 | Correlation rejects | stale/distant/mismatched hidden, counters rise | `[ ]` host: refusal paths (`FuseDetection` false + reason: empty depth, behind-camera, too-small cluster) pass in `detection_fusion_tests`; app-10 increments `fusionFailures_` → `fusion_fail` log (main.cpp `DetectionPipeline`). Device logcat rate still pending |
+| V-6 | Empty clears | valid-empty → no boxes | `[ ]` code-read only (not a pass per legend): `ProcessResult` builds a fresh `PreparedScene` per result (main.cpp:564), so zero detections → zero objects → no boxes; empty depth → `FuseDetection` false host-tested (`detection_fusion_tests.cpp:174`). Stale scene persists until next result or `expiresNanoseconds`; device confirmation still pending |
+| V-7 | Agreement gate | stereo↔env Δ within 0.10 m/10% or hidden; rate ___ | `[ ]` host: `CheckAgreement` verdicts (agree / disagree→Hide / env-only→FallbackEnv / neither→Hide) pass in `detection_fusion_tests` using additive tolerance `0.10m + 0.10*min` (code truth; O-3 "whichever greater" wording is stale); app-10 wires env-only call with 0.10F/0.10F tolerances after each `FuseDetection` (main.cpp `DetectionPipeline`). No stereo feed on device yet, so device Δ rate still pending |
+| V-8 | Fallback provenance | env-depth boxes flagged, tinted, lower confidence | `[ ]` host-wired, device measure pending: `rangeSource` set from `CheckAgreement`; FallbackEnv → `confidence ×0.7`, amber tint, `fusedEnvFallback_` → `env_fallback=` log (main.cpp). Amber-vs-green + confidence discount not yet observed on headset |
 | V-9 | World-lock | static object stable during head move | `[ ]` |
 
 ## Accuracy (Group 4 → R-5/R-8)
@@ -53,6 +53,6 @@ A tick with no number is not a result.
 |---|---|---|---|
 | V-16 | No pixel leak | stats-only unless fixture action | `[ ]` |
 | V-17 | Perf evidence clean | no prototype build in `docs/performance` | `[ ]` |
-| V-18 | Revert cost | `--stereo-prototype` off = prior app-10 behavior | `[ ]` |
+| V-18 | Revert cost | `--stereo-prototype` off = prior app-10 behavior | `[ ]` host note: no `--stereo-prototype` flag exists in app-10 (code-read main.cpp) — this packet is always-on env-path provenance (confidence ×0.7, amber tint, extra `env_fallback` log field), so revert = git revert of main.cpp, not a flag flip. Device behavior comparison still pending |
 
 **Verdict:** `________` **Date:** `________`

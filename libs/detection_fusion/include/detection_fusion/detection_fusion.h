@@ -76,6 +76,15 @@ struct FusionParameters {
     math::Vec3 upInLocal{0.0F, 1.0F, 0.0F};
 };
 
+// Provenance for the hybrid stereo-primary / env-depth-secondary design.
+// Stereo supplies the representative range; env-depth agrees, falls back
+// degraded, or loses. A mixed box is never presented as fully measured.
+enum class RangeSource {
+    Stereo,
+    EnvDepthFallback,
+    Prior,
+};
+
 // An oriented cuboid: the thing a 2D box plus depth can actually support.
 struct FusedBox {
     math::Vec3 centerInLocal{};
@@ -97,7 +106,41 @@ struct FusedBox {
     // coverage means the depth barely saw the object, which is a reason to
     // distrust the extents even when the centre is sound.
     float confidence = 0.0F;
+    // R-7 provenance: which range produced this box. Defaults to Prior as the
+    // sentinel meaning unset/hide unless the caller overwrites after CheckAgreement.
+    RangeSource rangeSource = RangeSource::Prior;
 };
+
+// Agreement gate for the stereo-primary / env-depth-secondary design.
+enum class AgreementVerdict {
+    AgreeStereo,   // within tolerance: emit stereo box
+    FallbackEnv,   // stereo invalid, env valid: emit degraded, flagged
+    Hide,          // disagreement or both invalid: draw nothing
+};
+
+AgreementVerdict CheckAgreement(
+    bool stereoValid,
+    float stereoRangeMeters,
+    bool envValid,
+    float envRangeMeters,
+    float toleranceMeters,
+    float toleranceRatio,
+    RangeSource* selectedSource);
+
+// Pinhole range image to LOCAL points for the host/identity-pose case.
+// Camera frame is +Z-forward/+Y-down (Camera2 basis); output flips to
+// OpenXR LOCAL (-Z forward, +Y up) via a half-turn about X. Invalid (<=0)
+// range stays dropped, never zero-filled.
+bool StereoRangeToPoints(
+    const std::vector<float>& rangeMeters,
+    int32_t width,
+    int32_t height,
+    float fx,
+    float fy,
+    float cx,
+    float cy,
+    std::vector<math::Vec3>* pointsInLocal,
+    std::string* reason);
 
 // True when the point lies inside the frustum pyramid, after the border inset.
 bool PointInsideFrustum(

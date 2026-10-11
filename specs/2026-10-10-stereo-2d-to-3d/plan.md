@@ -1,8 +1,8 @@
 # Plan: Stereo 2D→3D Prototype
 
 Run from repo root. A group is complete only when its rows are recorded in
-`validation.md`. Prototype paths stay behind `--stereo-prototype` config so
-D-1 revert is clean.
+`validation.md`. This packet shipped always-on (no `--stereo-prototype` flag):
+revert is a git revert of the app-10 wiring, per V-18.
 
 ## Group 0 — P1B + P3O gate (blocks production, not this prototype)
 
