@@ -1035,6 +1035,29 @@ public:
                                 fused.halfExtents.z * 2.0F)),
                         boxColor,
                     });
+                    // Oriented X/Y/Z tripod at the box centre, same pose as
+                    // the cuboid. Axes shader is 1m long, so scale to a
+                    // readable length derived from the box size.
+                    const float axisLength = std::clamp(
+                        std::max(
+                            {fused.halfExtents.x,
+                             fused.halfExtents.y,
+                             fused.halfExtents.z}) *
+                            1.5F,
+                        0.15F,
+                        0.50F);
+                    draws->push_back({
+                        questlab::DebugLineShape::Axes,
+                        questlab::math::Multiply(
+                            questlab::math::Multiply(
+                                questlab::math::TranslationMatrix(
+                                    fused.centerInLocal),
+                                questlab::math::RotationMatrix(
+                                    fused.orientationInLocal)),
+                            ScaleMatrix(
+                                axisLength, axisLength, axisLength)),
+                        {1.0F, 1.0F, 1.0F, 1.0F},
+                    });
                 }
                 // No measured box means nothing is drawn. Bearing rays were
                 // tried and rejected: they emanate from the viewer's own eye
