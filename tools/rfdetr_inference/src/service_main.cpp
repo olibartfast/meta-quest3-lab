@@ -3,6 +3,7 @@
 #include "rfdetr_inference/onnx_session.h"
 #include "rfdetr_inference/postprocessing.h"
 #include "rfdetr_inference/preprocessing.h"
+#include "rfdetr_inference/triton_session.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -30,6 +31,9 @@ struct Options {
     std::filesystem::path manifestPath;
     std::filesystem::path modelPath;
     uint16_t port = 48110;
+    std::string tritonUrl;
+    std::string tritonModel = "rfdetr_nano";
+    std::string tritonVersion = "1";
 };
 
 int64_t SteadyNanoseconds() {
@@ -41,13 +45,22 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if ((argument == "--manifest" || argument == "--model" ||
-             argument == "--port") && index + 1 >= argc) {
+             argument == "--port" || argument == "--triton-url" ||
+             argument == "--triton-model" ||
+             argument == "--triton-version") &&
+            index + 1 >= argc) {
             return false;
         }
         if (argument == "--manifest") {
             options->manifestPath = argv[++index];
         } else if (argument == "--model") {
             options->modelPath = argv[++index];
+        } else if (argument == "--triton-url") {
+            options->tritonUrl = argv[++index];
+        } else if (argument == "--triton-model") {
+            options->tritonModel = argv[++index];
+        } else if (argument == "--triton-version") {
+            options->tritonVersion = argv[++index];
         } else if (argument == "--port") {
             try {
                 const unsigned long parsed = std::stoul(argv[++index]);
@@ -62,7 +75,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
             return false;
         }
     }
-    return !options->manifestPath.empty() && !options->modelPath.empty();
+    const bool useTriton = !options->tritonUrl.empty();
+    return !options->manifestPath.empty() &&
+           (useTriton || !options->modelPath.empty());
 }
 
 uint64_t HostToNetwork64(uint64_t value) {
@@ -130,10 +145,11 @@ bool SendFloat(int socket, float value) {
     return SendU32(socket, bits);
 }
 
+template <typename Session>
 bool ServeClient(
     int client,
     const questlab::rfdetr::ModelContract& contract,
-    questlab::rfdetr::OnnxSession* session) {
+    Session* session) {
     std::array<char, 4> magic{};
     std::array<char, kIdentityBytes> clientIdentity{};
     if (!ReceiveAll(client, magic.data(), magic.size()) ||
@@ -258,8 +274,9 @@ bool ServeClient(
 int main(int argc, char** argv) {
     Options options;
     if (!ParseOptions(argc, argv, &options)) {
-        std::cerr << "Usage: rfdetr_service --manifest PATH --model PATH "
-                     "[--port 48110]\n";
+        std::cerr << "Usage: rfdetr_service --manifest PATH "
+                     "[--model PATH | --triton-url URL] [--triton-model NAME] "
+                     "[--triton-version VER] [--port 48110]\n";
         return 2;
     }
     questlab::rfdetr::ModelContract contract;
@@ -269,10 +286,25 @@ int main(int argc, char** argv) {
         std::cerr << "Manifest rejected: " << error << '\n';
         return 1;
     }
-    questlab::rfdetr::OnnxSession session;
-    if (!session.Initialize(options.modelPath, contract, &error)) {
-        std::cerr << "ONNX Runtime initialization failed: " << error << '\n';
-        return 1;
+    const bool useTriton = !options.tritonUrl.empty();
+    questlab::rfdetr::OnnxSession onnxSession;
+    questlab::rfdetr::TritonSession tritonSession;
+    if (useTriton) {
+        if (!tritonSession.Initialize(
+                options.tritonUrl,
+                options.tritonModel,
+                options.tritonVersion,
+                contract,
+                &error)) {
+            std::cerr << "Triton initialization failed: " << error << '\n';
+            return 1;
+        }
+    } else {
+        if (!onnxSession.Initialize(options.modelPath, contract, &error)) {
+            std::cerr << "ONNX Runtime initialization failed: " << error
+                      << '\n';
+            return 1;
+        }
     }
     const size_t inputCount = std::accumulate(
         contract.input.shape.begin(),
@@ -284,8 +316,10 @@ int main(int argc, char** argv) {
     std::vector<float> warmupInput(inputCount, 0.0F);
     std::vector<float> warmupBoxes;
     std::vector<float> warmupLogits;
-    if (!session.Run(
-            warmupInput, &warmupBoxes, &warmupLogits, &error)) {
+    const bool warmupOk = useTriton
+        ? tritonSession.Run(warmupInput, &warmupBoxes, &warmupLogits, &error)
+        : onnxSession.Run(warmupInput, &warmupBoxes, &warmupLogits, &error);
+    if (!warmupOk) {
         std::cerr << "Warm-up failed: " << error << '\n';
         return 1;
     }
@@ -312,14 +346,19 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::cout << "RF-DETR service ready on 127.0.0.1:" << options.port
-              << " manifest=" << contract.onnxSha256 << '\n';
+              << " manifest=" << contract.onnxSha256
+              << (useTriton ? " backend=triton" : " backend=onnxruntime")
+              << '\n';
     while (true) {
         const int client = accept(server, nullptr, nullptr);
         if (client < 0) {
             break;
         }
         std::cout << "client connected\n";
-        if (!ServeClient(client, contract, &session)) {
+        const bool served = useTriton
+            ? ServeClient(client, contract, &tritonSession)
+            : ServeClient(client, contract, &onnxSession);
+        if (!served) {
             std::cerr << "client session rejected or failed\n";
         }
         close(client);
