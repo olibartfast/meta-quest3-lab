@@ -8,3 +8,4 @@ local.properties
 apps/*/build/
 XrPassthrough/Projects/Android/.gradle/
 XrPassthrough/Projects/Android/.cxx
+tools/triton/model_repository/*/1/model.onnx
