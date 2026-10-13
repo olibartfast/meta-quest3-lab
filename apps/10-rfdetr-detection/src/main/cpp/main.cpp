@@ -42,7 +42,7 @@
 namespace {
 
 constexpr char kModelIdentity[] =
-    "1ac37bb3429380c7aee6b2c2778d20026db0ad18579cac119255d31f736dc760";
+    "63f47251aa4c20b97c6a39acc7385444380806cc3a7454131c4e2933bb2020a9";
 constexpr size_t kRetainedFrameCount = 16;
 // Depth frames merged before fitting a box. Bounded so the point set and the
 // fusion cost stay predictable; head motion limits how far back is useful.
