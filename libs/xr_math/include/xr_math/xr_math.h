@@ -46,6 +46,16 @@ Quat IdentityQuat();
 Quat Conjugate(const Quat& quaternion);
 Quat Multiply(const Quat& left, const Quat& right);
 bool Normalize(Quat* quaternion, float epsilon = kDefaultEpsilon);
+// Quaternion rotating the identity basis onto the orthonormal right-handed
+// basis (xAxis, yAxis, zAxis): local +X maps to xAxis, +Y to yAxis,
+// +Z to zAxis. Used for full 6D surface orientation; unlike RotationFromTo
+// plus roll correction it preserves measured pitch and roll.
+bool QuatFromBasis(
+    const Vec3& xAxis,
+    const Vec3& yAxis,
+    const Vec3& zAxis,
+    Quat* rotation,
+    float epsilon = kDefaultEpsilon);
 Vec3 Rotate(const Quat& quaternion, const Vec3& vector);
 bool RotationFromTo(
     const Vec3& from,

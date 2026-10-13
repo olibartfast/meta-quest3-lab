@@ -181,38 +181,54 @@ int main() {
             "empty depth must be refused");
     }
 
-    // The box must be level with the room: its up axis follows LOCAL up even
-    // though the bearing is tilted downward.
+    // The box must follow a tilted surface: pitch and roll are measured,
+    // not flattened onto LOCAL horizontal. A 30-degree pitched slab must
+    // yield a box whose local +Z (back toward the viewer) aligns with the
+    // negated plane normal, and whose up is tilted away from LOCAL up.
     {
-        questlab::fusion::DetectionFrustum tilted = MakeFrustum(0.2F);
-        questlab::math::Vec3 bearing{0.0F, -0.5F, -1.0F};
-        questlab::math::Normalize(&bearing);
-        tilted.centerDirectionInLocal = bearing;
-        for (auto& corner : tilted.cornerDirectionsInLocal) {
-            corner = questlab::math::Add(corner, {0.0F, -0.5F, 0.0F});
-            questlab::math::Normalize(&corner);
-        }
+        constexpr float kPitchRadians = 0.5235988F;  // 30 degrees
+        const questlab::math::Vec3 normal{
+            0.0F, std::sin(kPitchRadians), -std::cos(kPitchRadians)};
+        const questlab::math::Vec3 center{0.0F, 0.0F, -2.0F};
+        questlab::math::Vec3 u{1.0F, 0.0F, 0.0F};
+        questlab::math::Vec3 v = questlab::math::Cross(normal, u);
+        questlab::math::Normalize(&v);
         std::vector<questlab::math::Vec3> points;
         for (int ix = -8; ix <= 8; ++ix) {
             for (int iy = -8; iy <= 8; ++iy) {
                 const float fx = static_cast<float>(ix) / 8.0F;
                 const float fy = static_cast<float>(iy) / 8.0F;
                 points.push_back(questlab::math::Add(
-                    questlab::math::Scale(bearing, 2.0F),
-                    {fx * 0.12F, fy * 0.12F, 0.0F}));
+                    center,
+                    questlab::math::Add(
+                        questlab::math::Scale(u, fx * 0.12F),
+                        questlab::math::Scale(v, fy * 0.12F))));
             }
         }
         questlab::fusion::FusedBox box;
         std::string reason;
         passed &= Expect(
             questlab::fusion::FuseDetection(
-                tilted, points, parameters, {}, &box, &reason),
+                frustum, points, parameters, {}, &box, &reason),
             reason.empty() ? "tilted fusion must succeed" : reason.c_str());
+        passed &= Expect(
+            box.orientationIsMeasured,
+            "tilted plane must yield a measured orientation");
+        const questlab::math::Vec3 boxBack =
+            questlab::math::Rotate(box.orientationInLocal, {0.0F, 0.0F, 1.0F});
+        const questlab::math::Vec3 towardViewer =
+            questlab::math::Scale(normal, -1.0F);
+        passed &= Expect(
+            questlab::math::Dot(boxBack, towardViewer) > 0.995F,
+            "the box Z axis must align with the measured surface normal");
         const questlab::math::Vec3 boxUp =
             questlab::math::Rotate(box.orientationInLocal, {0.0F, 1.0F, 0.0F});
         passed &= Expect(
-            std::fabs(boxUp.y - 1.0F) < 0.05F,
-            "the box up axis must stay aligned with LOCAL up");
+            boxUp.y < 0.95F,
+            "a pitched surface must tilt the box away from LOCAL up");
+        passed &= Expect(
+            std::fabs(box.centerInLocal.z + 2.0F) < 0.08F,
+            "tilted box centre must stay at the slab distance");
     }
 
     // With a size prior the near face must stay where depth measured it and

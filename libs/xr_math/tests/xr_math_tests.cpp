@@ -69,6 +69,51 @@ void TestRotationFromTo() {
         "null rotation output must fail");
 }
 
+void TestQuatFromBasis() {
+    using namespace questlab::math;
+    // Identity basis must yield the identity rotation.
+    {
+        Quat rotation{};
+        Expect(
+            QuatFromBasis(
+                {1.0F, 0.0F, 0.0F},
+                {0.0F, 1.0F, 0.0F},
+                {0.0F, 0.0F, 1.0F},
+                &rotation),
+            "identity basis must produce a rotation");
+        Expect(
+            NearlyEqual(rotation, IdentityQuat(), 1.0e-5F),
+            "identity basis must produce the identity quaternion");
+    }
+    // A 30-degree pitched frame must round-trip all three axes.
+    {
+        constexpr float kPitch = 0.5235988F;
+        const Vec3 x{1.0F, 0.0F, 0.0F};
+        Vec3 z{0.0F, -std::sin(kPitch), std::cos(kPitch)};
+        Normalize(&z);
+        Vec3 y = Cross(z, x);
+        Normalize(&y);
+        Quat rotation{};
+        Expect(
+            QuatFromBasis(x, y, z, &rotation),
+            "pitched basis must produce a rotation");
+        Expect(
+            NearlyEqual(Rotate(rotation, {1.0F, 0.0F, 0.0F}), x, 1.0e-5F),
+            "basis rotation must preserve the X axis");
+        Expect(
+            NearlyEqual(Rotate(rotation, {0.0F, 1.0F, 0.0F}), y, 1.0e-5F),
+            "basis rotation must preserve the Y axis");
+        Expect(
+            NearlyEqual(Rotate(rotation, {0.0F, 0.0F, 1.0F}), z, 1.0e-5F),
+            "basis rotation must preserve the Z axis");
+    }
+    Expect(
+        !QuatFromBasis(
+            {1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F},
+            nullptr),
+        "null rotation output must fail");
+}
+
 void TestPoseCompositionAndInverse() {
     using namespace questlab::math;
     const Pose worldFromParent{
@@ -126,6 +171,7 @@ void TestProjectionDepthRange() {
 int main() {
     TestVectorAndQuaternionOperations();
     TestRotationFromTo();
+    TestQuatFromBasis();
     TestPoseCompositionAndInverse();
     TestProjectionDepthRange();
     if (failures != 0) {
