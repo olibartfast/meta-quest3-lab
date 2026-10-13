@@ -14,6 +14,7 @@ manifest_path="$repo_root/tools/rfdetr_export/model-manifest.json"
 service_host="127.0.0.1"
 service_port="48110"
 replay_detections=""
+allowed_classes=""
 build_only=false
 vulkan_validation=false
 perfetto_tracing=false
@@ -72,6 +73,14 @@ while [[ $# -gt 0 ]]; do
             service_port="$2"
             shift 2
             ;;
+        --allowed-classes)
+            if [[ $# -lt 2 ]]; then
+                echo "--allowed-classes requires a value" >&2
+                exit 2
+            fi
+            allowed_classes="$2"
+            shift 2
+            ;;	
         --replay-detections)
             if [[ $# -lt 2 ]]; then
                 echo "--replay-detections requires a value" >&2
@@ -98,7 +107,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|replay}] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH]" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|replay}] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
             exit 2
             ;;
     esac
@@ -106,7 +115,7 @@ done
 
 if [[ -z "$app" ]]; then
     echo "Select an application with --app." >&2
-    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|replay}] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH]" >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|replay}] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
     exit 2
 fi
 
@@ -396,6 +405,7 @@ if [[ "$app" == "10-rfdetr-detection" ]]; then
         "service_port=$service_port" \
         "submission_hz=$submission_hz" \
         "expiry_ms=$expiry_ms" \
+        "allowed_classes=$allowed_classes" \
         "xnnpack_threads=4" | \
         adb exec-in \
             "run-as $application_id sh -c 'cat > files/detector.conf'"

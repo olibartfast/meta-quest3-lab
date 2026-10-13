@@ -34,6 +34,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -153,6 +154,8 @@ questlab::detection::DetectorConfig LoadDetectorConfig(
                 config.xnnpackThreads = std::stoi(value);
             } else if (key == "replay_frame_id") {
                 config.replayFrameId = std::stoull(value);
+            } else if (key == "allowed_classes") {
+                config.allowedClassesCsv = value;
             }
         } catch (const std::exception& exception) {
             questlab::LogWarning(
@@ -254,9 +257,31 @@ struct PipelineSnapshot {
     uint64_t fusionFailures = 0;
     uint64_t fusedBoxes = 0;
     uint64_t fusedEnvFallback = 0;
+    uint64_t filteredByClass = 0;
     uint64_t depthFramesConsumed = 0;
     size_t depthPointCount = 0;
 };
+
+// A CSV token matches a detection by COCO class id ("72") or label
+// ("tv"). Split once at startup; empty CSV means every class passes.
+void ParseClassAllowlist(
+    const std::string& csv,
+    std::unordered_set<std::string>* names,
+    std::unordered_set<int32_t>* ids) {
+    std::istringstream stream(csv);
+    std::string token;
+    while (std::getline(stream, token, ',')) {
+        token = Trim(token);
+        if (token.empty()) {
+            continue;
+        }
+        try {
+            ids->insert(static_cast<int32_t>(std::stoi(token)));
+        } catch (const std::exception&) {
+            names->insert(token);
+        }
+    }
+}
 
 class DetectionPipeline {
 public:
@@ -265,6 +290,15 @@ public:
     bool Start(const questlab::detection::DetectorConfig& config) {
         Stop();
         config_ = config;
+        allowedNames_.clear();
+        allowedIds_.clear();
+        ParseClassAllowlist(
+            config_.allowedClassesCsv, &allowedNames_, &allowedIds_);
+        if (!allowedNames_.empty() || !allowedIds_.empty()) {
+            questlab::LogInfo(
+                "Class filter: only [%s] reaches fusion",
+                config_.allowedClassesCsv.c_str());
+        }
         detector_ = questlab::detection::CreateObjectDetector(config_);
         if (detector_ == nullptr || !detector_->Start(config_)) {
             std::lock_guard<std::mutex> lock(outputMutex_);
@@ -576,6 +610,19 @@ private:
         bool projectionSummaryLogged = false;
         for (const questlab::detection::Detection& detection :
              result.detections) {
+            // CLI class filter: empty allowlist means all classes pass.
+            // A passed class id ("72") or label ("tv") lets the detection
+            // through; everything else is dropped before projection.
+            if (!allowedNames_.empty() || !allowedIds_.empty()) {
+                const bool nameOk = allowedNames_.count(detection.className) >
+                    0U;
+                const bool idOk =
+                    allowedIds_.count(detection.classId) > 0U;
+                if (!nameOk && !idOk) {
+                    ++filteredByClass_;
+                    continue;
+                }
+            }
             questlab::projection::DetectionProjection projected;
             std::string error;
             if (!questlab::projection::BuildDetectionProjection(
@@ -651,6 +698,28 @@ private:
                         ++fusedEnvFallback_;
                     }
                     ++fusedBoxes_;
+                    questlab::LogInfo(
+                        "FUSED_POSE frame=%llu class=%s centre=[%.3f %.3f "
+                        "%.3f] quat=[%.3f %.3f %.3f %.3f] half=[%.3f %.3f "
+                        "%.3f] range=%.2fm planeInlier=%.2f measured=%d "
+                        "source=%d conf=%.2f",
+                        static_cast<unsigned long long>(result.frameId),
+                        detection.className.c_str(),
+                        object.box.centerInLocal.x,
+                        object.box.centerInLocal.y,
+                        object.box.centerInLocal.z,
+                        object.box.orientationInLocal.x,
+                        object.box.orientationInLocal.y,
+                        object.box.orientationInLocal.z,
+                        object.box.orientationInLocal.w,
+                        object.box.halfExtents.x,
+                        object.box.halfExtents.y,
+                        object.box.halfExtents.z,
+                        object.box.representativeRangeMeters,
+                        object.box.planeInlierRatio,
+                        object.box.orientationIsMeasured ? 1 : 0,
+                        static_cast<int>(object.box.rangeSource),
+                        object.box.confidence);
                 }
             } else {
                 object.hasBox = false;
@@ -658,6 +727,11 @@ private:
                 // FuseDetection leaves rangeSource at the Prior sentinel on
                 // failure; hasBox=false covers it so it never renders.
                 ++fusionFailures_;
+                questlab::LogInfo(
+                    "FUSE_REJECT frame=%llu class=%s reason=%s",
+                    static_cast<unsigned long long>(result.frameId),
+                    detection.className.c_str(),
+                    boxReason.c_str());
             }
             prepared->objects.push_back(std::move(object));
             if (!projectionSummaryLogged) {
@@ -763,11 +837,15 @@ private:
         snapshot_.fusionFailures = fusionFailures_;
         snapshot_.fusedBoxes = fusedBoxes_;
         snapshot_.fusedEnvFallback = fusedEnvFallback_;
+        snapshot_.filteredByClass = filteredByClass_;
         snapshot_.depthFramesConsumed = depthFramesConsumed_;
         snapshot_.depthPointCount = depthPointsInLocal_.size();
     }
 
     questlab::detection::DetectorConfig config_;
+    std::unordered_set<std::string> allowedNames_;
+    std::unordered_set<int32_t> allowedIds_;
+    uint64_t filteredByClass_ = 0;
     std::unique_ptr<questlab::detection::IObjectDetector> detector_;
     std::thread worker_;
     mutable std::mutex inputMutex_;
@@ -1117,7 +1195,7 @@ private:
         const auto& stats = snapshot.detectorStats;
         questlab::LogInfo(
             "RFDETR status backend=%s health=%s prepared=%s "
-            "boxes=%llu fusion_fail=%llu env_fallback=%llu "
+            "boxes=%llu fusion_fail=%llu env_fallback=%llu filtered=%llu "
             "depth_frames=%llu depth_points=%zu "
             "submitted=%llu completed=%llu pending_drop=%llu rate_drop=%llu "
             "dispatch_drop=%llu unmatched=%llu expired=%llu projection_fail=%llu "
@@ -1128,6 +1206,7 @@ private:
             static_cast<unsigned long long>(snapshot.fusedBoxes),
             static_cast<unsigned long long>(snapshot.fusionFailures),
             static_cast<unsigned long long>(snapshot.fusedEnvFallback),
+            static_cast<unsigned long long>(snapshot.filteredByClass),
             static_cast<unsigned long long>(snapshot.depthFramesConsumed),
             snapshot.depthPointCount,
             static_cast<unsigned long long>(stats.submittedFrames),
@@ -1398,6 +1477,8 @@ void android_main(android_app* app) {
         "RF-DETR detection starting backend=%s private_dir=%s",
         BackendName(detectorConfig.kind),
         privateDirectory.c_str());
+    questlab::LogInfo(
+        "Fusion orient=surface-6D (plane normal + in-plane axis, no PnP)");
 
     const questlab::camera::CameraSourceConfig cameraConfig{
         questlab::camera::CameraSourceKind::MetaCamera2,
