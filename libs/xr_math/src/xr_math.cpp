@@ -148,6 +148,60 @@ bool RotationFromTo(
     return Normalize(rotation, epsilon);
 }
 
+bool QuatFromBasis(
+    const Vec3& xAxis,
+    const Vec3& yAxis,
+    const Vec3& zAxis,
+    Quat* rotation,
+    float epsilon) {
+    if (rotation == nullptr) {
+        return false;
+    }
+    // Columns of the rotation matrix taking local axes to the given basis.
+    // Column-major storage: values[column * 4 + row].
+    const float m00 = xAxis.x;
+    const float m10 = xAxis.y;
+    const float m20 = xAxis.z;
+    const float m01 = yAxis.x;
+    const float m11 = yAxis.y;
+    const float m21 = yAxis.z;
+    const float m02 = zAxis.x;
+    const float m12 = zAxis.y;
+    const float m22 = zAxis.z;
+    const float trace = m00 + m11 + m22;
+    Quat candidate{};
+    if (trace > 0.0F) {
+        const float s = std::sqrt(trace + 1.0F) * 2.0F;
+        candidate.w = 0.25F * s;
+        candidate.x = (m21 - m12) / s;
+        candidate.y = (m02 - m20) / s;
+        candidate.z = (m10 - m01) / s;
+    } else if (m00 > m11 && m00 > m22) {
+        const float s = std::sqrt(1.0F + m00 - m11 - m22) * 2.0F;
+        candidate.w = (m21 - m12) / s;
+        candidate.x = 0.25F * s;
+        candidate.y = (m01 + m10) / s;
+        candidate.z = (m02 + m20) / s;
+    } else if (m11 > m22) {
+        const float s = std::sqrt(1.0F + m11 - m00 - m22) * 2.0F;
+        candidate.w = (m02 - m20) / s;
+        candidate.x = (m01 + m10) / s;
+        candidate.y = 0.25F * s;
+        candidate.z = (m12 + m21) / s;
+    } else {
+        const float s = std::sqrt(1.0F + m22 - m00 - m11) * 2.0F;
+        candidate.w = (m10 - m01) / s;
+        candidate.x = (m02 + m20) / s;
+        candidate.y = (m12 + m21) / s;
+        candidate.z = 0.25F * s;
+    }
+    if (!Normalize(&candidate, epsilon)) {
+        return false;
+    }
+    *rotation = candidate;
+    return true;
+}
+
 Pose IdentityPose() {
     return {};
 }

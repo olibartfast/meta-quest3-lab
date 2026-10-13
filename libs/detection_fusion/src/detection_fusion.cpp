@@ -122,6 +122,33 @@ float Percentile(std::vector<float>* values, float fraction) {
     return (*values)[index];
 }
 
+// In-plane X axis for full 6D orientation: the LOCAL X axis projected onto
+// the fitted surface, with a deterministic cascade when the surface is
+// edge-on to X. World-referenced (not PCA) so the frame is stable across
+// frames and keeps world-X meaning on fronto-parallel surfaces, while pitch
+// and roll still follow the measured normal. Returns false only when the
+// normal itself is degenerate.
+bool StableInPlaneAxis(
+    const math::Vec3& normal,
+    math::Vec3* axis) {
+    const math::Vec3 references[3] = {
+        {1.0F, 0.0F, 0.0F},
+        {0.0F, 1.0F, 0.0F},
+        {0.0F, 0.0F, 1.0F},
+    };
+    for (const math::Vec3& reference : references) {
+        math::Vec3 projected = math::Subtract(
+            reference,
+            math::Scale(normal, math::Dot(reference, normal)));
+        // Edge-on when the residual is under ~11 degrees of the reference.
+        if (math::Length(projected) > 0.2F && math::Normalize(&projected)) {
+            *axis = projected;
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 bool PointInsideFrustum(
@@ -274,11 +301,13 @@ bool FuseDetection(
     // clusterToleranceMeters.
     (void)parameters.minimumInlierRatio;
 
-    // Orientation: yaw about the up axis, taken from the centre bearing
-    // flattened onto the horizontal plane. Depth from a single viewpoint sees
-    // only the front surface, so a PCA yaw would fit the visible face rather
-    // than the object; facing the box along the viewing bearing is the honest
-    // convention and is documented as such.
+    // Full 6D orientation from the measured surface. The RANSAC plane
+    // normal supplies the out-of-plane rotation; PCA over the in-plane
+    // residuals supplies the remaining in-plane rotation. Pitch and roll
+    // are preserved, so a tilted surface yields a tilted box. The old
+    // yaw-only convention (flatten onto LOCAL horizontal, boxes stay level
+    // with the room) is kept only as the degenerate fallback when the
+    // cluster has no measurable in-plane extent.
     math::Vec3 up = parameters.upInLocal;
     if (!math::Normalize(&up)) {
         return fail("Up axis is degenerate");
@@ -301,16 +330,45 @@ bool FuseDetection(
     if (parameters.requireMeasuredOrientation && !orientationMeasured) {
         return fail("No planar surface reached consensus");
     }
-    forward = math::Subtract(forward, math::Scale(up, math::Dot(forward, up)));
-    if (!math::Normalize(&forward)) {
-        return fail("Bearing is parallel to the up axis");
-    }
+    // Box frame, right-handed: X is the stable in-plane axis, Z is the
+    // box-local +Z pointing back toward the viewer (-forward), and Y
+    // completes the basis. No flattening onto LOCAL horizontal.
     math::Vec3 right = math::Cross(forward, up);
+    bool stableOk = false;
+    if (orientationMeasured) {
+        math::Vec3 inPlane{};
+        if (StableInPlaneAxis(forward, &inPlane)) {
+            right = inPlane;
+            stableOk = true;
+        }
+    }
+    if (!stableOk) {
+        // Degenerate in-plane extent (or unmeasured bearing fallback):
+        // derive X from the viewing geometry as before.
+        math::Vec3 flatForward = math::Subtract(
+            forward, math::Scale(up, math::Dot(forward, up)));
+        if (!math::Normalize(&flatForward)) {
+            return fail("Bearing is parallel to the up axis");
+        }
+        right = math::Cross(flatForward, up);
+        forward = flatForward;
+    }
+    if (!math::Normalize(&right)) {
+        return fail("Cannot build a box basis");
+    }
+    math::Vec3 back = math::Scale(forward, -1.0F);
+    math::Vec3 boxUp = math::Cross(back, right);
+    if (!math::Normalize(&boxUp)) {
+        return fail("Cannot build a box basis");
+    }
+    // Re-orthogonalize X against the completed frame for exactness.
+    right = math::Cross(boxUp, back);
     if (!math::Normalize(&right)) {
         return fail("Cannot build a box basis");
     }
 
-    // Extents in the box basis, from percentiles.
+    // Extents in the box basis, from percentiles. boxUp is the measured
+    // surface-up, not LOCAL up: a tilted surface yields tilted extents.
     std::vector<float> alongRight;
     std::vector<float> alongUp;
     std::vector<float> alongForward;
@@ -319,7 +377,7 @@ bool FuseDetection(
     alongForward.reserve(cluster.size());
     for (const math::Vec3& point : cluster) {
         alongRight.push_back(math::Dot(point, right));
-        alongUp.push_back(math::Dot(point, up));
+        alongUp.push_back(math::Dot(point, boxUp));
         alongForward.push_back(math::Dot(point, forward));
     }
 
@@ -358,21 +416,14 @@ bool FuseDetection(
     const math::Vec3 centre = math::Add(
         math::Add(
             math::Scale(right, (rightLow + rightHigh) * 0.5F),
-            math::Scale(up, (upLow + upHigh) * 0.5F)),
+            math::Scale(boxUp, (upLow + upHigh) * 0.5F)),
         math::Scale(forward, forwardCentre));
 
-    // Build the orientation quaternion from the basis. right/up/forward are
-    // orthonormal by construction above.
+    // Full 6D orientation from the measured basis. Local +X maps to right,
+    // +Y to boxUp, +Z back toward the viewer, preserving pitch and roll.
     math::Quat orientation{};
-    if (!math::RotationFromTo({0.0F, 0.0F, -1.0F}, forward, &orientation)) {
+    if (!math::QuatFromBasis(right, boxUp, back, &orientation)) {
         return fail("Cannot orient the box");
-    }
-    // Remove any residual roll by re-deriving from the up axis.
-    const math::Vec3 rotatedUp = math::Rotate(orientation, {0.0F, 1.0F, 0.0F});
-    math::Quat rollCorrection{};
-    if (math::RotationFromTo(rotatedUp, up, &rollCorrection)) {
-        orientation = math::Multiply(rollCorrection, orientation);
-        math::Normalize(&orientation);
     }
 
     box->centerInLocal = centre;

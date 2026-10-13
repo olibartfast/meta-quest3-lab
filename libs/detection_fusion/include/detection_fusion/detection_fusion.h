@@ -71,8 +71,10 @@ struct FusionParameters {
     float minimumInlierRatio = 0.10F;
     float minimumRangeMeters = 0.25F;
     float maximumRangeMeters = 6.0F;
-    // Up axis in LOCAL. OpenXR LOCAL is Y-up, and the box yaw is resolved
-    // about this axis so cuboids stay level with the room.
+    // Up axis in LOCAL. OpenXR LOCAL is Y-up. It is used only for the
+    // degenerate fallback (no measurable in-plane extent): the measured
+    // path keeps the surface's own pitch and roll, so boxes follow tilted
+    // objects instead of staying level with the room.
     math::Vec3 upInLocal{0.0F, 1.0F, 0.0F};
 };
 
@@ -97,7 +99,9 @@ struct FusedBox {
     bool depthExtentIsAssumed = false;
     // True when a plane survived RANSAC and supplied the orientation. When
     // false the orientation falls back to the viewing bearing and is a display
-    // convention, not a measurement.
+    // convention, not a measurement. When true the full 6D surface frame is
+    // measured: plane normal plus the in-plane principal axis, so pitch and
+    // roll follow the object.
     bool orientationIsMeasured = false;
     float planeInlierRatio = 0.0F;
     uint32_t sampleCount = 0;
