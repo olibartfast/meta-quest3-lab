@@ -64,6 +64,10 @@ struct FusionParameters {
     // A box is only emitted when the plane fit succeeded. Falling back to the
     // viewing bearing produces a plausible-looking cuboid from no evidence.
     bool requireMeasuredOrientation = true;
+    // Ocean refinement (NonLinearOptimizationPlane, Huber) seeded by the
+    // RANSAC plane. Off by default: enable for host evaluation or once the
+    // plane_eval spike shows consistent gains. Needs QUESTLAB_HAS_OCEAN.
+    bool useOceanRefinement = false;
     uint32_t minimumSampleCount = 120;
     // Noise floor only. Surface selection is governed by
     // foregroundSampleShare above; this must stay below it, or a small object
