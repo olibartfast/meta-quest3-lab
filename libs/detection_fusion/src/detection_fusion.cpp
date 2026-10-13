@@ -3,6 +3,15 @@
 #include <algorithm>
 #include <cmath>
 
+#include "ransac_plane.h"
+
+#if defined(QUESTLAB_HAS_OCEAN)
+#include "ocean/base/Accessor.h"
+#include "ocean/geometry/NonLinearOptimizationPlane.h"
+#include "ocean/math/Plane3.h"
+#include "ocean/math/Vector3.h"
+#endif
+
 namespace questlab::fusion {
 namespace {
 
@@ -43,73 +52,72 @@ bool BuildInwardNormals(
     return true;
 }
 
-// Deterministic pseudo-random index source. A fixed sequence keeps fusion
-// reproducible frame to frame, which matters because a box that jitters
-// because of RANSAC sampling is indistinguishable from a box that jitters
-// because the sensor moved.
-struct SampleSequence {
-    uint32_t state = 0x9E3779B9U;
-    uint32_t Next() {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        return state;
-    }
-};
+// Plane consensus fitting lives in ransac_plane.h, shared verbatim with
+// the host-side Ocean comparison eval (tools/plane_eval).
 
-// Fits a plane by consensus and returns its unit normal and the inlier set.
-bool FitPlaneRansac(
+#if defined(QUESTLAB_HAS_OCEAN)
+// Robust refinement of a RANSAC seed plane with Ocean's Levenberg-Marquardt
+// Huber fit over the same points. Replaces the normal and recomputes the
+// inlier set when the refined plane is sane (within 30 degrees of the
+// seed) and keeps consensus; otherwise the seed stands.
+bool RefinePlaneOcean(
     const std::vector<math::Vec3>& points,
     const FusionParameters& parameters,
     math::Vec3* normal,
     std::vector<math::Vec3>* inliers) {
-    if (points.size() < 3) {
-        return false;
+    math::Vec3 centroid{};
+    for (const math::Vec3& point : *inliers) {
+        centroid = math::Add(centroid, point);
     }
-    SampleSequence sequence;
-    size_t bestCount = 0;
-    math::Vec3 bestNormal{};
-    float bestOffset = 0.0F;
-    for (uint32_t iteration = 0; iteration < parameters.ransacIterations;
-         ++iteration) {
-        const math::Vec3& a = points[sequence.Next() % points.size()];
-        const math::Vec3& b = points[sequence.Next() % points.size()];
-        const math::Vec3& c = points[sequence.Next() % points.size()];
-        math::Vec3 candidate =
-            math::Cross(math::Subtract(b, a), math::Subtract(c, a));
-        if (!math::Normalize(&candidate)) {
-            continue;
-        }
-        const float offset = math::Dot(candidate, a);
-        size_t count = 0;
-        for (const math::Vec3& point : points) {
-            if (std::fabs(math::Dot(candidate, point) - offset) <=
-                parameters.ransacInlierMeters) {
-                ++count;
-            }
-        }
-        if (count > bestCount) {
-            bestCount = count;
-            bestNormal = candidate;
-            bestOffset = offset;
+    centroid = math::Scale(
+        centroid, 1.0F / static_cast<float>(inliers->size()));
+    const Ocean::Vector3 seedPoint(centroid.x, centroid.y, centroid.z);
+    const Ocean::Vector3 seedNormal(normal->x, normal->y, normal->z);
+    const Ocean::Plane3 seedPlane(seedPoint, seedNormal);
+    std::vector<Ocean::Vector3> oceanPoints;
+    oceanPoints.reserve(points.size());
+    for (const math::Vec3& point : points) {
+        oceanPoints.emplace_back(point.x, point.y, point.z);
+    }
+    const Ocean::ConstArrayAccessor<Ocean::Vector3> accessor(oceanPoints);
+    Ocean::Plane3 refined = seedPlane;
+    if (!Ocean::Geometry::NonLinearOptimizationPlane::optimizePlane(
+            seedPlane, accessor, refined, 20u, Ocean::Geometry::Estimator::ET_HUBER)) {
+        return true;  // Refinement unavailable; seed stands, still success.
+    }
+    const Ocean::Vector3& refinedNormal = refined.normal();
+    math::Vec3 candidate{
+        static_cast<float>(refinedNormal.x()),
+        static_cast<float>(refinedNormal.y()),
+        static_cast<float>(refinedNormal.z()),
+    };
+    if (!math::Normalize(&candidate)) {
+        return true;
+    }
+    if (std::fabs(math::Dot(candidate, *normal)) < 0.866F) {
+        return true;  // Diverged from the seed; do not trust it.
+    }
+    const float offset = math::Dot(candidate, centroid);
+    std::vector<math::Vec3> refinedInliers;
+    refinedInliers.reserve(inliers->size());
+    for (const math::Vec3& point : points) {
+        if (std::fabs(math::Dot(candidate, point) - offset) <=
+            parameters.ransacInlierMeters) {
+            refinedInliers.push_back(point);
         }
     }
     const float ratio =
-        static_cast<float>(bestCount) / static_cast<float>(points.size());
-    if (ratio < parameters.ransacMinimumInlierRatio) {
-        return false;
+        static_cast<float>(refinedInliers.size()) /
+        static_cast<float>(points.size());
+    if (refinedInliers.size() < parameters.minimumSampleCount ||
+        ratio < parameters.ransacMinimumInlierRatio) {
+        return true;  // Lost consensus; seed stands, still success.
     }
-    inliers->clear();
-    inliers->reserve(bestCount);
-    for (const math::Vec3& point : points) {
-        if (std::fabs(math::Dot(bestNormal, point) - bestOffset) <=
-            parameters.ransacInlierMeters) {
-            inliers->push_back(point);
-        }
-    }
-    *normal = bestNormal;
+    *normal = candidate;
+    *inliers = std::move(refinedInliers);
     return true;
 }
+#endif
 
 float Percentile(std::vector<float>* values, float fraction) {
     if (values->empty()) {
@@ -323,6 +331,17 @@ bool FuseDetection(
         if (math::Dot(planeNormal, frustum.centerDirectionInLocal) < 0.0F) {
             planeNormal = math::Scale(planeNormal, -1.0F);
         }
+#if defined(QUESTLAB_HAS_OCEAN)
+        if (parameters.useOceanRefinement) {
+            // Seed-oriented refinement; keeps consensus guarantees by
+            // construction (falls back to the seed silently).
+            RefinePlaneOcean(cluster, parameters, &planeNormal, &planeInliers);
+            if (math::Dot(planeNormal, frustum.centerDirectionInLocal) <
+                0.0F) {
+                planeNormal = math::Scale(planeNormal, -1.0F);
+            }
+        }
+#endif
         forward = planeNormal;
         orientationMeasured = true;
         cluster = planeInliers;
