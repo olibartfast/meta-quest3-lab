@@ -391,7 +391,11 @@ if [[ "$app" == "10-rfdetr-detection" ]]; then
         "$application_id" horizonos.permission.HEADSET_CAMERA
     adb shell run-as "$application_id" mkdir -p files
     submission_hz="2"
-    expiry_ms="1500"
+    # Hold the last fused scene across the streaming period: submit (2 Hz)
+    # + inference + jitter routinely exceeds a second, and clearing to
+    # nothing between results reads as flicker. Boxes still fade with age
+    # and a valid empty result clears them immediately.
+    expiry_ms="5000"
     if [[ "$backend" == "ondevice" ]]; then
         # RF-DETR Nano is substantially slower on mobile CPU than the trusted
         # link. Keep the queue sparse and retain the exact frame long enough
