@@ -88,15 +88,20 @@ bool NearlyEqual(float first, float second) {
 void ValidateSupportedContract(const ModelContract& contract) {
     Require(contract.schema == "QUESTLAB_RFDETR_MODEL_V1", "schema");
     Require(contract.family == "RF-DETR", "model family");
-    Require(contract.variant == "nano", "model variant");
+    Require(
+        contract.variant == "nano" || contract.variant == "medium",
+        "model variant");
     Require(contract.onnxOpset == 17, "ONNX opset");
     Require(
         questlab::integrity::IsLowercaseSha256(contract.onnxSha256),
         "ONNX SHA-256");
     Require(contract.input.name == "input", "input name");
     Require(contract.input.elementType == "float32", "input element type");
+    const std::vector<int64_t> expectedInputShape =
+        contract.variant == "medium" ? std::vector<int64_t>({1, 3, 576, 576})
+                                     : std::vector<int64_t>({1, 3, 384, 384});
     Require(
-        contract.input.shape == std::vector<int64_t>({1, 3, 384, 384}),
+        contract.input.shape == expectedInputShape,
         "input shape");
     Require(contract.layout == "NCHW", "input layout");
     Require(contract.sourceColorOrder == "RGB", "input colour order");
