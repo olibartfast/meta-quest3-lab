@@ -1,0 +1,28 @@
+name: "rfdetr_nano"
+backend: "onnxruntime"
+max_batch_size: 1
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [ 3, 384, 384 ]
+  }
+]
+output [
+  {
+    name: "dets"
+    data_type: TYPE_FP32
+    dims: [ 300, 4 ]
+  },
+  {
+    name: "labels"
+    data_type: TYPE_FP32
+    dims: [ 300, 91 ]
+  }
+]
+instance_group [
+  {
+    count: 1
+    kind: KIND_CPU
+  }
+]
