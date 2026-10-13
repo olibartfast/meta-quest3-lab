@@ -37,6 +37,10 @@ struct DetectorConfig {
     int32_t xnnpackThreads = 4;
     std::string replayDetectionsPath;
     uint64_t replayFrameId = 0;
+    // Comma-separated detector label allowlist (e.g. "tv"). Empty means
+    // every class is processed. App-level filter: the detector still runs
+    // full COCO, but only listed labels reach projection/fusion/rendering.
+    std::string allowedClassesCsv;
 };
 
 struct DetectorCapabilities {
