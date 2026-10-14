@@ -58,6 +58,9 @@ add_library(rfdetr_inference_core STATIC
 target_compile_features(rfdetr_inference_core PUBLIC cxx_std_17)
 target_include_directories(rfdetr_inference_core PUBLIC include)
 target_include_directories(rfdetr_inference_core PRIVATE src)
+set_target_properties(rfdetr_inference_core PROPERTIES
+    POSITION_INDEPENDENT_CODE ON
+)
 target_link_libraries(rfdetr_inference_core PUBLIC
     artifact_integrity
     camera_source

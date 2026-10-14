@@ -1,0 +1,12 @@
+/* Dynamic symbol surface of libquest_vision.so: the QV_* C ABI plus the
+   questlab::vision C++ version symbol. Everything else bundled from the
+   static pipeline archives stays local (no ODR hazard for consumers). */
+{
+global:
+    Qv*;
+    extern "C++" {
+        questlab::vision::*;
+    };
+local:
+    *;
+};

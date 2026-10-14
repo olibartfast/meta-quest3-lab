@@ -11,6 +11,13 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     include(CTest)
 endif()
 
+set(QUEST_VISION_VERSION "1.0.0")
+configure_file(
+    ${CMAKE_CURRENT_LIST_DIR}/include/quest_vision/version.h.in
+    ${CMAKE_CURRENT_BINARY_DIR}/generated/quest_vision/version.h
+    @ONLY
+)
+
 if(NOT TARGET artifact_integrity)
     add_subdirectory(
         ${CMAKE_CURRENT_LIST_DIR}/../artifact_integrity
@@ -51,8 +58,12 @@ if(NOT TARGET object_detector)
     )
 endif()
 
-# Shared umbrella with the C ABI anchor plus the version symbol, so the
-# SHARED target always produces quest_vision.so / quest_vision.dll.
+# Shared umbrella: the C ABI anchor plus the version symbol. Pipeline
+# archives link PRIVATE and whole-archive so the .so/.dll truly bundles
+# the pipeline (no double copy in consumers, no ODR hazard) while hidden
+# visibility keeps the dynamic surface at the QV_* C ABI. C-only across
+# the boundary: with ANDROID_STL=c++_static a C++ API would duplicate the
+# standard library in one process.
 add_library(quest_vision SHARED
     src/quest_vision.cpp
     src/quest_vision_c_api.cpp
@@ -60,28 +71,55 @@ add_library(quest_vision SHARED
 set_target_properties(quest_vision PROPERTIES
     POSITION_INDEPENDENT_CODE ON
     OUTPUT_NAME quest_vision
-    VERSION 1.0.0
+    VERSION ${QUEST_VISION_VERSION}
     SOVERSION 1
-    # No __declspec annotations in the sources yet; export everything so
-    # the Windows DLL is usable. Tighten to an explicit export macro later.
-    WINDOWS_EXPORT_ALL_SYMBOLS ON
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
 )
 target_compile_features(quest_vision PUBLIC cxx_std_17)
 target_include_directories(quest_vision PUBLIC include)
 target_compile_definitions(quest_vision PRIVATE QUEST_VISION_BUILDING=1)
-target_link_libraries(quest_vision
-    PUBLIC
-        artifact_integrity
-        xr_math
-        camera_source
-        detection_projection
-        detection_fusion
-        object_detector
-)
-target_compile_options(quest_vision PRIVATE
-    -Wall
-    -Wextra
-    -Wpedantic
+if(MSVC)
+    target_compile_options(quest_vision PRIVATE /W4)
+else()
+    target_compile_options(quest_vision PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+    )
+endif()
+if(MSVC)
+    target_link_libraries(quest_vision
+        PRIVATE
+            artifact_integrity
+            xr_math
+            camera_source
+            detection_projection
+            detection_fusion
+            object_detector
+    )
+    # MSVC: QV_EXPORT (__declspec) is the export list; nothing else leaves.
+else()
+    target_link_libraries(quest_vision
+        PRIVATE
+            -Wl,--whole-archive
+            artifact_integrity
+            xr_math
+            camera_source
+            detection_projection
+            detection_fusion
+            object_detector
+            -Wl,--no-whole-archive
+            "-Wl,--version-script,${CMAKE_CURRENT_LIST_DIR}/quest_vision.map"
+    )
+    set_target_properties(quest_vision PROPERTIES
+        LINK_DEPENDS
+            ${CMAKE_CURRENT_LIST_DIR}/quest_vision.map
+    )
+endif()
+target_include_directories(quest_vision PUBLIC
+    include
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 
 if(BUILD_TESTING AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
