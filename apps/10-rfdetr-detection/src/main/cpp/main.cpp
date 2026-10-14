@@ -552,10 +552,28 @@ private:
             rawMinimum, capture.view.projection, &nearMetres);
         const bool farOk = questlab::depth::LinearizeDepth(
             rawMaximum, capture.view.projection, &farMetres);
+        // Vertical extent of the reconstructed cloud in LOCAL, in metres.
+        // This is the instrument for the row-order assumption in
+        // DepthTexelDirection: LOCAL is anchored at the startup head height,
+        // so a deliberate look at the floor must put the cloud below the
+        // origin (strongly negative Y). A positive range means the depth map
+        // rows are read upside down, which mirrors the whole scene about the
+        // view's horizontal plane and makes world-fixed boxes rotate rigidly
+        // opposite to head motion.
+        float pointMinY = 0.0F;
+        float pointMaxY = 0.0F;
+        if (!latestDepthPoints_.empty()) {
+            pointMinY = latestDepthPoints_.front().y;
+            pointMaxY = pointMinY;
+            for (const questlab::math::Vec3& point : latestDepthPoints_) {
+                pointMinY = std::min(pointMinY, point.y);
+                pointMaxY = std::max(pointMaxY, point.y);
+            }
+        }
         questlab::LogInfo(
             "DEPTH_DIAG %dx%d nearZ=%.4f farZ=%.4f raw=[%.5f %.5f] "
             "zero=%zu one=%zu points=%zu metres=[%s %s] "
-            "CENTRE=%.3fm spread=%.3fm",
+            "CENTRE=%.3fm spread=%.3fm yRange=[%.3f %.3f]",
             capture.width,
             capture.height,
             capture.view.projection.nearZ,
@@ -568,7 +586,9 @@ private:
             nearOk ? std::to_string(nearMetres).c_str() : "rejected",
             farOk ? std::to_string(farMetres).c_str() : "rejected",
             centreMetres,
-            patchSpread);
+            patchSpread,
+            pointMinY,
+            pointMaxY);
     }
 
     void ProcessCapture(PendingCapture pending) {
