@@ -122,6 +122,31 @@ bool XrInstanceContext::Initialize(
             enabledExtensions.push_back(additionalExtension);
         }
     }
+    for (const char* optionalExtension : options.optionalExtensions) {
+        if (optionalExtension == nullptr ||
+            optionalExtension[0] == '\0') {
+            LogError("An optional OpenXR extension name is empty");
+            return false;
+        }
+        const auto alreadyEnabled = std::find_if(
+            enabledExtensions.begin(),
+            enabledExtensions.end(),
+            [optionalExtension](const char* enabledExtension) {
+                return std::strcmp(
+                    enabledExtension, optionalExtension) == 0;
+            });
+        if (alreadyEnabled != enabledExtensions.end()) {
+            continue;
+        }
+        if (!HasExtension(extensions, optionalExtension)) {
+            LogWarning(
+                "Optional OpenXR extension unavailable, continuing "
+                "without it: %s",
+                optionalExtension);
+            continue;
+        }
+        enabledExtensions.push_back(optionalExtension);
+    }
 
     XrInstanceCreateInfoAndroidKHR androidInfo{
         XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR};
