@@ -41,6 +41,10 @@ struct DetectorConfig {
     // every class is processed. App-level filter: the detector still runs
     // full COCO, but only listed labels reach projection/fusion/rendering.
     std::string allowedClassesCsv;
+    // Ask the streaming service for screen-corner quads + PnP poses
+    // (QLD2 protocol). Needs a corners-capable service; off by default so
+    // old services keep working.
+    bool requestCorners = false;
 };
 
 struct DetectorCapabilities {
@@ -56,6 +60,16 @@ struct Detection {
     std::string className;
     float confidence = 0.0F;
     std::array<float, 4> boxXyxy{};
+    // Screen-corner extension (QLD2 services only): quad in source pixels
+    // (TL, TR, BR, BL) plus the PnP pose in the capture camera frame
+    // (+X right, +Y down, +Z forward) with its reprojection RMS. Absent
+    // unless the service fitted a quad.
+    bool hasCorners = false;
+    std::array<float, 8> cornerXy{};
+    bool hasCornerPose = false;
+    std::array<float, 4> cornerQuatXyzw{};
+    std::array<float, 3> cornerPosition{};
+    float cornerReprojectionPixels = -1.0F;
 };
 
 struct DetectionResult {

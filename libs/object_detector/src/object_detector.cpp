@@ -421,6 +421,13 @@ bool SendU64(int socket, uint64_t value) {
     return SendAll(socket, &value, sizeof(value));
 }
 
+bool SendFloat(int socket, float value) {
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return SendU32(socket, bits);
+}
+
 bool ReceiveU64(int socket, uint64_t* value) {
     uint64_t wire = 0;
     if (!ReceiveAll(socket, &wire, sizeof(wire))) {
@@ -504,7 +511,12 @@ protected:
             return false;
         }
         socket_.store(connected);
-        const char magic[4] = {'Q', 'L', 'D', '1'};
+        // QLD2 asks for the screen-corner extension (quad + PnP pose per
+        // detection); QLD1 keeps the legacy frames-only protocol.
+        const char magic[4] = {
+            'Q', 'L', 'D', config.requestCorners ? '2' : '1'};
+        const std::array<char, 4> expectedReply = {
+            'Q', 'L', 'D', config.requestCorners ? '2' : '1'};
         std::array<char, kManifestIdentityBytes> identity{};
         std::copy(
             config.expectedManifestIdentity.begin(),
@@ -517,15 +529,16 @@ protected:
             !ReceiveAll(connected, replyMagic.data(), replyMagic.size()) ||
             !ReceiveAll(
                 connected, replyIdentity.data(), replyIdentity.size()) ||
-            replyMagic != std::array<char, 4>{'Q', 'L', 'D', '1'} ||
-            replyIdentity != identity) {
+            replyMagic != expectedReply || replyIdentity != identity) {
             if (error != nullptr) {
                 *error = "Streaming handshake or manifest identity mismatch";
             }
             close(connected);
             socket_.store(-1);
+            cornersMode_.store(false);
             return false;
         }
+        cornersMode_.store(config.requestCorners);
         *manifestIdentity = config.expectedManifestIdentity;
         return true;
     }
@@ -556,6 +569,7 @@ protected:
             return false;
         }
         const char frameMagic[4] = {'F', 'R', 'M', '1'};
+        const bool corners = cornersMode_.load();
         if (!SendAll(connected, frameMagic, sizeof(frameMagic)) ||
             !SendU64(connected, capture.frameId) ||
             !SendU64(
@@ -564,6 +578,11 @@ protected:
             !SendU32(connected, static_cast<uint32_t>(capture.width)) ||
             !SendU32(connected, static_cast<uint32_t>(capture.height)) ||
             !SendU32(connected, static_cast<uint32_t>(rgba.size())) ||
+            (corners &&
+             (!SendFloat(connected, capture.intrinsics.fx) ||
+              !SendFloat(connected, capture.intrinsics.fy) ||
+              !SendFloat(connected, capture.intrinsics.cx) ||
+              !SendFloat(connected, capture.intrinsics.cy))) ||
             !SendAll(connected, rgba.data(), rgba.size())) {
             if (error != nullptr) {
                 *error = "Streaming frame send failed";
@@ -637,6 +656,66 @@ protected:
                 }
                 return false;
             }
+            // QLD2 corner extension: presence flag, quad, pose flag, pose.
+            if (corners) {
+                uint32_t hasCorners = 0;
+                if (!ReceiveU32(connected, &hasCorners)) {
+                    if (error != nullptr) {
+                        *error = "Streaming corner payload is truncated";
+                    }
+                    return false;
+                }
+                if (hasCorners != 0U) {
+                    detection.hasCorners = true;
+                    for (float& coordinate : detection.cornerXy) {
+                        if (!ReceiveFloat(connected, &coordinate)) {
+                            if (error != nullptr) {
+                                *error =
+                                    "Streaming corner payload is truncated";
+                            }
+                            return false;
+                        }
+                    }
+                    uint32_t hasPose = 0;
+                    if (!ReceiveU32(connected, &hasPose)) {
+                        if (error != nullptr) {
+                            *error =
+                                "Streaming corner payload is truncated";
+                        }
+                        return false;
+                    }
+                    if (hasPose != 0U) {
+                        detection.hasCornerPose = true;
+                        for (float& component : detection.cornerQuatXyzw) {
+                            if (!ReceiveFloat(connected, &component)) {
+                                if (error != nullptr) {
+                                    *error =
+                                        "Streaming pose payload is truncated";
+                                }
+                                return false;
+                            }
+                        }
+                        for (float& component : detection.cornerPosition) {
+                            if (!ReceiveFloat(connected, &component)) {
+                                if (error != nullptr) {
+                                    *error =
+                                        "Streaming pose payload is truncated";
+                                }
+                                return false;
+                            }
+                        }
+                        if (!ReceiveFloat(
+                                connected,
+                                &detection.cornerReprojectionPixels)) {
+                            if (error != nullptr) {
+                                *error =
+                                    "Streaming pose payload is truncated";
+                            }
+                            return false;
+                        }
+                    }
+                }
+            }
             completed.detections.push_back(std::move(detection));
         }
         *result = std::move(completed);
@@ -645,6 +724,7 @@ protected:
 
     void CancelBackend() override {
         const int connected = socket_.exchange(-1);
+        cornersMode_.store(false);
         if (connected >= 0) {
             shutdown(connected, SHUT_RDWR);
             close(connected);
@@ -657,6 +737,7 @@ protected:
 
 private:
     std::atomic<int> socket_{-1};
+    std::atomic<bool> cornersMode_{false};
 };
 
 #else
