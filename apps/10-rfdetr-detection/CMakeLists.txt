@@ -58,6 +58,9 @@ add_library(rfdetr_detection SHARED
 target_compile_definitions(rfdetr_detection PRIVATE
     XR_USE_GRAPHICS_API_VULKAN
     XR_USE_PLATFORM_ANDROID
+    # Exposes struct timespec PFN types (e.g. PFN_xrConvertTimespecTimeToTimeKHR)
+    # in the bundled OpenXR headers; <ctime> is included before them.
+    XR_USE_TIMESPEC
 )
 if(QUEST_ENABLE_VULKAN_VALIDATION)
     target_compile_definitions(rfdetr_detection PRIVATE
