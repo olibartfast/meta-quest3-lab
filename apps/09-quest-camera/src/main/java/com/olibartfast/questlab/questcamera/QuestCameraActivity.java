@@ -349,14 +349,22 @@ public final class QuestCameraActivity extends NativeActivity {
                 Collections.singletonList(imageReader.getSurface()),
                 new CameraCaptureSession.StateCallback() {
                     @Override
-                    public void onConfigured(
+                    public synchronized void onConfigured(
                         CameraCaptureSession session) {
+                        // Stale callback: closeCamera() may have run while
+                        // this was in flight (onDisconnected/onError, pause).
+                        // Adopting the session and starting a request on a
+                        // null cameraDevice is the historical crash here.
+                        if (cameraDevice == null || imageReader == null) {
+                            session.close();
+                            return;
+                        }
                         captureSession = session;
                         startRepeatingRequest();
                     }
 
                     @Override
-                    public void onConfigureFailed(
+                    public synchronized void onConfigureFailed(
                         CameraCaptureSession session) {
                         nativeOnCameraError(
                             "Camera2 capture-session configuration failed");
@@ -372,7 +380,15 @@ public final class QuestCameraActivity extends NativeActivity {
         }
     }
 
-    private void startRepeatingRequest() {
+    private synchronized void startRepeatingRequest() {
+        // Guarded because closeCamera() runs on the main thread while this
+        // runs on the camera handler; the fields can be cleared between
+        // onConfigured and this call.
+        if (cameraDevice == null || captureSession == null ||
+            imageReader == null) {
+            Log.w(TAG, "Camera session start skipped: camera closed");
+            return;
+        }
         try {
             CaptureRequest.Builder request = cameraDevice.createCaptureRequest(
                 CameraDevice.TEMPLATE_PREVIEW);
