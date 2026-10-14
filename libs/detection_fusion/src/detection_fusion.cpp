@@ -134,10 +134,13 @@ float Percentile(std::vector<float>* values, float fraction) {
 
 // In-plane X axis for full 6D orientation: the LOCAL X axis projected onto
 // the fitted surface, with a deterministic cascade when the surface is
-// edge-on to X. World-referenced (not PCA) so the frame is stable across
-// frames and keeps world-X meaning on fronto-parallel surfaces, while pitch
-// and roll still follow the measured normal. Returns false only when the
-// normal itself is degenerate.
+// edge-on to X. Used only for near-horizontal surfaces, where the in-plane
+// direction is arbitrary and the axis parallel to the surface is well
+// conditioned by construction. Vertical surfaces take the world-up rule
+// below instead: this cascade flips reference when the projection crosses
+// the threshold, and a screen almost parallel to LOCAL X sits on that
+// threshold, which rotated the box by ~125 degrees whenever the fitted
+// normal jittered across it.
 bool StableInPlaneAxis(
     const math::Vec3& normal,
     math::Vec3* axis) {
@@ -351,19 +354,43 @@ bool FuseDetection(
     if (parameters.requireMeasuredOrientation && !orientationMeasured) {
         return fail("No planar surface reached consensus");
     }
-    // Box frame, right-handed: X is the stable in-plane axis, Z is the
-    // box-local +Z pointing back toward the viewer (-forward), and Y
-    // completes the basis. No flattening onto LOCAL horizontal.
-    math::Vec3 right = math::Cross(forward, up);
-    bool stableOk = false;
+    // Box frame, right-handed: X x Y = Z with Z pointing back toward the
+    // viewer (-forward). The in-plane orientation is decided once, here:
+    // - A measured surface that is not near-horizontal inherits world up as
+    //   its own up (projected onto it). For a monitor, a wall or a tilted
+    //   laptop screen this is the only convention with a meaning, and it is
+    //   continuous: a normal wobbling by a few degrees moves the box by a few
+    //   degrees. Picking a world axis by a threshold instead makes the box
+    //   snap by up to 90 degrees the moment the normal crosses the threshold,
+    //   which was observed on device: a screen almost parallel to LOCAL X
+    //   alternated between the X and Y projections of the old cascade,
+    //   rotating the box rigidly against head motion.
+    // - A near-horizontal surface keeps the world-axis projection rule: its
+    //   in-plane direction is arbitrary, and the axis parallel to the surface
+    //   is well conditioned there by construction.
+    // - An unmeasured bearing keeps the old yaw-only convention derived from
+    //   the viewing geometry.
+    math::Vec3 back = math::Scale(forward, -1.0F);
+    math::Vec3 right{};
+    math::Vec3 boxUp{};
+    bool frameOk = false;
     if (orientationMeasured) {
-        math::Vec3 inPlane{};
-        if (StableInPlaneAxis(forward, &inPlane)) {
-            right = inPlane;
-            stableOk = true;
+        math::Vec3 projectedUp = math::Subtract(
+            up, math::Scale(forward, math::Dot(up, forward)));
+        if (math::Length(projectedUp) > 0.2F && math::Normalize(&projectedUp)) {
+            boxUp = projectedUp;
+            right = math::Cross(boxUp, back);
+            frameOk = true;
+        } else {
+            math::Vec3 inPlane{};
+            if (StableInPlaneAxis(forward, &inPlane)) {
+                right = inPlane;
+                boxUp = math::Cross(back, right);
+                frameOk = true;
+            }
         }
     }
-    if (!stableOk) {
+    if (!frameOk) {
         // Degenerate in-plane extent (or unmeasured bearing fallback):
         // derive X from the viewing geometry as before.
         math::Vec3 flatForward = math::Subtract(
@@ -371,15 +398,12 @@ bool FuseDetection(
         if (!math::Normalize(&flatForward)) {
             return fail("Bearing is parallel to the up axis");
         }
-        right = math::Cross(flatForward, up);
         forward = flatForward;
+        back = math::Scale(forward, -1.0F);
+        right = math::Cross(flatForward, up);
+        boxUp = math::Cross(back, right);
     }
-    if (!math::Normalize(&right)) {
-        return fail("Cannot build a box basis");
-    }
-    math::Vec3 back = math::Scale(forward, -1.0F);
-    math::Vec3 boxUp = math::Cross(back, right);
-    if (!math::Normalize(&boxUp)) {
+    if (!math::Normalize(&right) || !math::Normalize(&boxUp)) {
         return fail("Cannot build a box basis");
     }
     // Re-orthogonalize X against the completed frame for exactness.
