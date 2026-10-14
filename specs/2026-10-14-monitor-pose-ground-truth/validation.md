@@ -61,3 +61,15 @@ misalignment), not that orientation math needs tuning — fix sync first
 revisit in-plane axis and jitter handling.
 
 **Verdict:** `________` **Date:** `________`
+
+## Evidence
+- 2026-10-14 (host, this machine): `cmake -S libs/xr_core/tests` + build +
+  `ctest`: 2/2 pass (`xr_event_fanout_tests`, new `capture_time_tests`
+  covering ns→timespec, residual sign, and all five `DecideCapturePose`
+  branches) with `-Werror` clean. P1 code landed: optional
+  `XR_KHR_convert_timespec_time` (never hard-fails), capture-time locate at
+  submit, per-record `poseWasSubstituted`, throttled CAPTURE_POSE residual
+  log, startup clock-assumption log.
+- NOT run: `assembleDebug` (no Android SDK/NDK on this machine) and any
+  device/headset validation — PENDING-USER. P0 baseline numbers still owed
+  by the device run before/after (R-7).

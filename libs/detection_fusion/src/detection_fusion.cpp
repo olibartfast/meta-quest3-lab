@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <random>
 
 #include "ransac_plane.h"
 
@@ -505,6 +507,176 @@ AgreementVerdict CheckAgreement(
     }
     select(RangeSource::Prior);
     return AgreementVerdict::Hide;
+}
+
+namespace {
+
+bool FinitePositiveRange(float rangeMeters) {
+    return std::isfinite(rangeMeters) && rangeMeters > 0.0F;
+}
+
+}  // namespace
+
+AgreementVerdict CheckLearnedAgreement(
+    bool learnedValid,
+    float learnedRangeMeters,
+    bool envValid,
+    float envRangeMeters,
+    float toleranceMeters,
+    float toleranceRatio,
+    RangeSource* selectedSource) {
+    const auto select = [&](RangeSource source) {
+        if (selectedSource != nullptr) {
+            *selectedSource = source;
+        }
+    };
+    const bool learnedOk =
+        learnedValid && FinitePositiveRange(learnedRangeMeters);
+    const bool envOk = envValid && FinitePositiveRange(envRangeMeters);
+    if (learnedOk && envOk) {
+        // Env is kept; Learned stays a comparison source for the G-3 gate.
+        const float delta = std::fabs(learnedRangeMeters - envRangeMeters);
+        const float allowed = toleranceMeters +
+                              toleranceRatio *
+                                  std::min(learnedRangeMeters, envRangeMeters);
+        if (delta <= allowed) {
+            select(RangeSource::EnvDepthFallback);
+            return AgreementVerdict::FallbackEnv;
+        }
+        select(RangeSource::Prior);
+        return AgreementVerdict::Hide;
+    }
+    if (!envOk && learnedOk) {
+        select(RangeSource::Learned);
+        return AgreementVerdict::FallbackLearned;
+    }
+    select(RangeSource::Prior);
+    return AgreementVerdict::Hide;
+}
+
+bool AlignMonoDisparity(
+    const std::vector<MonoAlignSample>& samples,
+    int ransacIterations,
+    float inlierDisparityTolerance,
+    float minimumInlierRatio,
+    MonoAlignResult* result,
+    std::string* reason) {
+    const auto fail = [&](const char* message) {
+        if (result != nullptr) {
+            *result = MonoAlignResult{};
+        }
+        if (reason != nullptr) {
+            *reason = message;
+        }
+        return false;
+    };
+    if (result == nullptr) {
+        return fail("null result output");
+    }
+    if (ransacIterations <= 0 || inlierDisparityTolerance <= 0.0F) {
+        return fail("invalid RANSAC budget or tolerance");
+    }
+    // Work in inverse depth: x = 1/depth, model d = scale*x + shift.
+    std::vector<float> invDepth;
+    std::vector<float> disparity;
+    invDepth.reserve(samples.size());
+    disparity.reserve(samples.size());
+    for (const MonoAlignSample& sample : samples) {
+        if (!std::isfinite(sample.disparity) ||
+            !std::isfinite(sample.envDepthMeters) ||
+            sample.envDepthMeters <= 0.0F) {
+            continue;
+        }
+        invDepth.push_back(1.0F / sample.envDepthMeters);
+        disparity.push_back(sample.disparity);
+    }
+    if (invDepth.size() < 2) {
+        return fail("fewer than two valid env samples");
+    }
+    // Minimal solver on pairs with distinct inverse depth; deterministic
+    // stream so host tests are repeatable.
+    std::mt19937 rng(0xC10Cu);
+    std::uniform_int_distribution<size_t> pick(0, invDepth.size() - 1);
+    float bestScale = 0.0F;
+    float bestShift = 0.0F;
+    size_t bestInliers = 0;
+    constexpr float kDistinctInverseDepth = 1e-6F;
+    for (int iteration = 0; iteration < ransacIterations; ++iteration) {
+        const size_t i = pick(rng);
+        const size_t j = pick(rng);
+        if (i == j) {
+            continue;
+        }
+        const float dx = invDepth[i] - invDepth[j];
+        if (std::fabs(dx) < kDistinctInverseDepth) {
+            continue;
+        }
+        const float scale = (disparity[i] - disparity[j]) / dx;
+        if (!(scale > 0.0F) || !std::isfinite(scale)) {
+            continue;  // Disparity must grow with proximity.
+        }
+        const float shift = disparity[i] - scale * invDepth[i];
+        size_t inliers = 0;
+        for (size_t k = 0; k < invDepth.size(); ++k) {
+            const float predicted = scale * invDepth[k] + shift;
+            if (std::fabs(disparity[k] - predicted) <=
+                inlierDisparityTolerance) {
+                ++inliers;
+            }
+        }
+        if (inliers > bestInliers) {
+            bestInliers = inliers;
+            bestScale = scale;
+            bestShift = shift;
+        }
+    }
+    if (bestInliers < 2) {
+        return fail("no consensus pair: degenerate geometry");
+    }
+    // Least-squares refinement on the consensus set.
+    double sumX = 0.0;
+    double sumD = 0.0;
+    double sumXX = 0.0;
+    double sumXD = 0.0;
+    size_t refined = 0;
+    for (size_t k = 0; k < invDepth.size(); ++k) {
+        const float predicted = bestScale * invDepth[k] + bestShift;
+        if (std::fabs(disparity[k] - predicted) <=
+            inlierDisparityTolerance) {
+            const double x = invDepth[k];
+            const double d = disparity[k];
+            sumX += x;
+            sumD += d;
+            sumXX += x * x;
+            sumXD += x * d;
+            ++refined;
+        }
+    }
+    const double denom =
+        static_cast<double>(refined) * sumXX - sumX * sumX;
+    if (!(denom > 0.0) || !std::isfinite(denom)) {
+        return fail("refinement degenerate: collinear samples");
+    }
+    const double scale =
+        (static_cast<double>(refined) * sumXD - sumX * sumD) / denom;
+    const double shift = (sumD - scale * sumX) / static_cast<double>(refined);
+    if (!(scale > 0.0) || !std::isfinite(scale) ||
+        !std::isfinite(shift)) {
+        return fail("refined scale invalid");
+    }
+    const float inlierRatio = static_cast<float>(refined) /
+                              static_cast<float>(invDepth.size());
+    if (inlierRatio < minimumInlierRatio) {
+        return fail("inlier ratio below minimum");
+    }
+    result->scale = static_cast<float>(scale);
+    result->shift = static_cast<float>(shift);
+    result->inlierRatio = inlierRatio;
+    result->valid = true;
+    if (reason != nullptr) {
+        reason->clear();
+    }
+    return true;
 }
 
 bool StereoRangeToPoints(
