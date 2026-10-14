@@ -5,11 +5,25 @@
 #include "quest_vision/quest_vision_c_api.h"
 
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 
 #include "detection_fusion/detection_fusion.h"
+#include "quest_vision/version.h"
 
 namespace {
+
+// Layout contracts with the C++ types the header mirrors. Any drift here
+// breaks Unity marshalling silently, so it fails the build instead.
+static_assert(sizeof(QvVec3) == sizeof(questlab::math::Vec3));
+static_assert(offsetof(QvVec3, x) == offsetof(questlab::math::Vec3, x));
+static_assert(offsetof(QvVec3, y) == offsetof(questlab::math::Vec3, y));
+static_assert(offsetof(QvVec3, z) == offsetof(questlab::math::Vec3, z));
+static_assert(sizeof(QvQuat) == sizeof(questlab::math::Quat));
+static_assert(offsetof(QvQuat, x) == offsetof(questlab::math::Quat, x));
+static_assert(offsetof(QvQuat, y) == offsetof(questlab::math::Quat, y));
+static_assert(offsetof(QvQuat, z) == offsetof(questlab::math::Quat, z));
+static_assert(offsetof(QvQuat, w) == offsetof(questlab::math::Quat, w));
 
 questlab::math::Vec3 ToCpp(const QvVec3& value) {
     return {value.x, value.y, value.z};
@@ -160,7 +174,7 @@ int32_t FuseImpl(
 extern "C" {
 
 QV_EXPORT const char* QvVersion(void) {
-    return "quest_vision 1.0.0";
+    return QUEST_VISION_VERSION_STRING;
 }
 
 QV_EXPORT QvFusionHandle QvCreate(void) {
@@ -180,7 +194,7 @@ QV_EXPORT int32_t QvSetParams(
     const QvFusionParams* params) {
     FusionSession* session = static_cast<FusionSession*>(handle);
     if (session == nullptr || params == nullptr) {
-        return QV_BAD_ARGUMENT;
+        return session == nullptr ? QV_BAD_HANDLE : QV_BAD_ARGUMENT;
     }
     try {
         session->params = ParamsToCpp(*params);
@@ -201,9 +215,14 @@ QV_EXPORT int32_t QvFuse(
     char* reason,
     int32_t reasonSize) {
     FusionSession* session = static_cast<FusionSession*>(handle);
-    if (session == nullptr || outResult == nullptr) {
-        WriteReason("invalid argument", reason, reasonSize);
-        return session == nullptr ? QV_BAD_HANDLE : QV_BAD_ARGUMENT;
+    if (session == nullptr) {
+        WriteReason("invalid handle", reason, reasonSize);
+        return QV_BAD_HANDLE;
+    }
+    if (outResult == nullptr) {
+        session->lastError = "invalid argument";
+        WriteReason(session->lastError, reason, reasonSize);
+        return QV_BAD_ARGUMENT;
     }
     return FuseImpl(
         session->params, frustum, points, pointCount, prior,

@@ -116,6 +116,16 @@ typedef struct QvFuseResult {
     float poseMatrix[16];
 } QvFuseResult;
 
+// Threading and lifetime contract:
+// - A session is NOT thread-safe. One thread per session, or external lock.
+// - QvGetLastError stays valid until the next QvFuse/QvSetParams on the
+//   same session; copy it if it must outlive the next call.
+// - reason buffers are always NUL-terminated when reasonSize > 0.
+// Coordinate frames: the fusion math is handedness-agnostic. Frustum side
+// planes are oriented by centerDir, so feeding a left-handed space (Unity)
+// works unchanged as long as origin, corners, centerDir and depth points
+// all share it. Do NOT insert a basis flip; it would break the pairing.
+
 // Create a fusion session with default parameters. Never NULL on success;
 // NULL means allocation failure.
 QV_EXPORT QvFusionHandle QvCreate(void);
@@ -140,10 +150,11 @@ QV_EXPORT int32_t QvFuse(
     char* reason,
     int32_t reasonSize);
 
-// Stateless one-shot entry points (no session needed).
-
 // Last error/reason string of the session. Never NULL; empty when clean.
+// See lifetime contract above.
 QV_EXPORT const char* QvGetLastError(QvFusionHandle handle);
+
+// Stateless one-shot entry points (no session needed).
 
 // Library version string, e.g. "quest_vision 1.0.0". Never NULL.
 QV_EXPORT const char* QvVersion(void);

@@ -2,16 +2,12 @@
 //
 // The library is an umbrella: all computer-vision objects come from the
 // statically linked pipeline archives (xr_math, camera_source,
-// detection_projection, detection_fusion, object_detector). This file
-// exists so the SHARED target always produces quest_vision.so /
-// quest_vision.dll, and carries the single version symbol consumers can
-// probe at runtime.
-#include <string>
+// detection_projection, detection_fusion, object_detector), pulled
+// whole-archive. The only public surface is the C ABI in
+// quest_vision_c_api.h (version via QvVersion); this TU carries the
+// configured version string so a mismatch fails the build, not at load.
+#include "quest_vision/version.h"
 
-namespace questlab::vision {
-
-const char* Version() {
-    return "quest_vision 1.0.0";
-}
-
-}  // namespace questlab::vision
+static_assert(
+    sizeof(QUEST_VISION_VERSION_STRING) > sizeof("quest_vision "),
+    "quest_vision version string is unset");

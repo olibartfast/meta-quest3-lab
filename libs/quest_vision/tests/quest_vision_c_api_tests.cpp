@@ -101,6 +101,73 @@ int main() {
         QvPointInsideFrustum(nullptr, &points[0], 0.12F) == QV_BAD_ARGUMENT,
         "null frustum containment must be a usage error");
 
+    // Session API: lifecycle, params, fuse with pose matrix, errors.
+    {
+        QvFusionHandle session = QvCreate();
+        Expect(session != nullptr, "session creation must succeed");
+        QvFusionParams sessionParams{};
+        QvFusionParamsDefault(&sessionParams);
+        Expect(
+            QvSetParams(session, &sessionParams) == QV_OK,
+            "session params must apply");
+        Expect(
+            QvSetParams(nullptr, &sessionParams) == QV_BAD_HANDLE,
+            "null session params must be a handle error");
+        QvFuseResult result{};
+        char sessionReason[256]{};
+        Expect(
+            QvFuse(
+                session, &frustum, points.data(),
+                static_cast<int32_t>(points.size()), &prior, &result,
+                sessionReason, sizeof(sessionReason)) == QV_OK,
+            sessionReason[0] != '\0' ? sessionReason
+                                     : "session fuse must succeed");
+        // Column 3 of the pose matrix must equal the box centre.
+        Expect(
+            result.poseMatrix[12] == result.box.center.x &&
+                result.poseMatrix[13] == result.box.center.y &&
+                result.poseMatrix[14] == result.box.center.z &&
+                result.poseMatrix[15] == 1.0F,
+            "pose matrix translation must equal the box centre");
+        // 3x3 block must match the quaternion: rotate +X and compare.
+        {
+            const float x = result.box.orientation.x;
+            const float y = result.box.orientation.y;
+            const float z = result.box.orientation.z;
+            const float w = result.box.orientation.w;
+            const float rx[3] = {
+                1.0F - 2.0F * (y * y + z * z),
+                2.0F * (x * y + z * w),
+                2.0F * (x * z - y * w),
+            };
+            Expect(
+                std::fabs(result.poseMatrix[0] - rx[0]) < 1.0e-5F &&
+                    std::fabs(result.poseMatrix[1] - rx[1]) < 1.0e-5F &&
+                    std::fabs(result.poseMatrix[2] - rx[2]) < 1.0e-5F,
+                "pose matrix rotation must match the quaternion");
+        }
+        Expect(
+            QvGetLastError(session) != nullptr &&
+                QvGetLastError(session)[0] == '\0',
+            "clean session must report an empty last error");
+        Expect(
+            QvFuse(
+                session, &frustum, nullptr, 0, &prior, &result, nullptr,
+                0) == QV_REFUSED,
+            "empty depth through a session must refuse");
+        Expect(
+            QvGetLastError(session) != nullptr &&
+                QvGetLastError(session)[0] != '\0',
+            "refusal must land in the session last error");
+        Expect(
+            QvFuse(
+                nullptr, &frustum, points.data(), 1, &prior, &result,
+                nullptr, 0) == QV_BAD_HANDLE,
+            "null session fuse must be a handle error");
+        QvDestroy(session);
+        QvDestroy(nullptr);  // Must not crash.
+    }
+
     if (failures == 0) {
         std::puts("quest_vision C API tests passed");
     }

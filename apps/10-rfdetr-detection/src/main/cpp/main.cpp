@@ -51,6 +51,28 @@ constexpr size_t kRetainedFrameCount = 16;
 constexpr size_t kDepthAccumulationFrames = 6;
 
 std::atomic<questlab::camera::MetaCamera2Adapter*> gCameraAdapter{nullptr};
+// Shared ownership for JNI callbacks: the raw atomic above only narrows the
+// race. A callback that loaded the pointer just before shutdown could still
+// run inside adapter->OnFrame while android_main destroys the camera.
+// LockCamera() extends the lifetime through the whole callback instead.
+std::mutex gCameraMutex;
+std::shared_ptr<questlab::camera::IRgbCameraSource> gCamera;
+
+// Holds shared ownership of the camera source for one JNI callback, so a
+// frame arriving during shutdown runs against a live adapter (already
+// stopped, hence dropping) instead of freed memory.
+std::shared_ptr<questlab::camera::IRgbCameraSource> LockCamera() {
+    std::lock_guard<std::mutex> lock(gCameraMutex);
+    return gCamera;
+}
+
+questlab::camera::MetaCamera2Adapter* LockAdapter(
+    const std::shared_ptr<questlab::camera::IRgbCameraSource>& camera) {
+    if (camera == nullptr) {
+        return nullptr;
+    }
+    return dynamic_cast<questlab::camera::MetaCamera2Adapter*>(camera.get());
+}
 std::atomic<uint64_t> gFrameId{1};
 
 struct AndroidState {
@@ -880,7 +902,10 @@ private:
     uint64_t fusedEnvFallback_ = 0;
     uint64_t depthFramesConsumed_ = 0;
     int64_t lastDepthReportNanoseconds_ = 0;
-    uint64_t dispatchOverwrites_ = 0;
+    // Written on the render thread (SubmitCapture, under inputMutex_) and
+    // read on the worker (status line, PublishStats): plain uint64_t here
+    // is a data race, hence atomic.
+    std::atomic<uint64_t> dispatchOverwrites_{0};
     uint64_t unmatchedResults_ = 0;
     uint64_t expiredResults_ = 0;
     uint64_t projectionFailures_ = 0;
@@ -965,10 +990,11 @@ public:
                 convertTimespecTime_ = convert;
             }
         }
-        // Explicit clock assumption (R-2): Camera2 REALTIME stamps are
+        // Explicit clock handling (R-2): Camera2 REALTIME stamps are
         // CLOCK_BOOTTIME; the convert extension consumes CLOCK_MONOTONIC.
-        // Equal inside one awake session; the residual log below is the
-        // instrument that would expose a violation.
+        // Their gap is the total suspend time since boot and does NOT reset
+        // on resume, so BOOTTIME == MONOTONIC only holds on a never-slept
+        // boot. The offset is therefore sampled fresh per call below.
         questlab::LogInfo(
             "Capture-time pose %s: convert-timespec-time %s; Camera2 "
             "REALTIME/BOOTTIME assumed, JNI timestamp-source check is a "
@@ -994,9 +1020,31 @@ public:
         if (parts.tvSec <= 0) {
             return false;
         }
+        // BOOTTIME-to-MONOTONIC offset, sampled now: the gap equals total
+        // suspend time since boot, so a stale or assumed-zero offset lands
+        // the converted XrTime minutes in the past and every capture pose
+        // fails the history check below.
+        struct timespec bootTime{};
+        struct timespec monoTime{};
+        if (clock_gettime(CLOCK_BOOTTIME, &bootTime) != 0 ||
+            clock_gettime(CLOCK_MONOTONIC, &monoTime) != 0) {
+            return false;
+        }
+        const int64_t bootNanos = static_cast<int64_t>(bootTime.tv_sec) *
+                1000000000LL +
+            static_cast<int64_t>(bootTime.tv_nsec);
+        const int64_t monoNanos = static_cast<int64_t>(monoTime.tv_sec) *
+                1000000000LL +
+            static_cast<int64_t>(monoTime.tv_nsec);
+        const questlab::SensorTimespec monoParts =
+            questlab::SensorNanosToTimespec(
+                sensorTimestampNanoseconds - (bootNanos - monoNanos));
+        if (monoParts.tvSec <= 0) {
+            return false;
+        }
         struct timespec captureTimespec{};
-        captureTimespec.tv_sec = static_cast<time_t>(parts.tvSec);
-        captureTimespec.tv_nsec = static_cast<long>(parts.tvNsec);
+        captureTimespec.tv_sec = static_cast<time_t>(monoParts.tvSec);
+        captureTimespec.tv_nsec = static_cast<long>(monoParts.tvNsec);
         XrTime captureTime = 0;
         if (convertTimespecTime_(
                 capturePoseInstance_, &captureTimespec, &captureTime) !=
@@ -1446,7 +1494,8 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnPermission
     JNIEnv*,
     jobject,
     jboolean granted) {
-    if (auto* adapter = gCameraAdapter.load()) {
+    const auto camera = LockCamera();
+    if (auto* adapter = LockAdapter(camera)) {
         adapter->SetPermissionState(granted == JNI_TRUE);
         questlab::LogInfo(
             "Camera permission: %s",
@@ -1466,7 +1515,8 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraConf
     jfloatArray distortion,
     jfloatArray rotation,
     jfloatArray translation) {
-    auto* adapter = gCameraAdapter.load();
+    const auto camera = LockCamera();
+    auto* adapter = LockAdapter(camera);
     if (adapter == nullptr) {
         return;
     }
@@ -1554,7 +1604,8 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraFram
     jbyteArray v,
     jint vRowStride,
     jint vPixelStride) {
-    auto* adapter = gCameraAdapter.load();
+    const auto camera = LockCamera();
+    auto* adapter = LockAdapter(camera);
     if (adapter == nullptr) {
         return;
     }
@@ -1590,7 +1641,8 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraErro
     if (messageChars != nullptr) {
         environment->ReleaseStringUTFChars(message, messageChars);
     }
-    if (auto* adapter = gCameraAdapter.load()) {
+    const auto camera = LockCamera();
+    if (auto* adapter = LockAdapter(camera)) {
         adapter->OnError(error);
     }
     questlab::LogError("%s", error.c_str());
