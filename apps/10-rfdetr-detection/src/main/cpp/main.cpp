@@ -50,11 +50,11 @@ constexpr size_t kRetainedFrameCount = 16;
 // fusion cost stay predictable; head motion limits how far back is useful.
 constexpr size_t kDepthAccumulationFrames = 6;
 
-std::atomic<questlab::camera::MetaCamera2Adapter*> gCameraAdapter{nullptr};
-// Shared ownership for JNI callbacks: the raw atomic above only narrows the
-// race. A callback that loaded the pointer just before shutdown could still
-// run inside adapter->OnFrame while android_main destroys the camera.
-// LockCamera() extends the lifetime through the whole callback instead.
+// Shared ownership for JNI callbacks: a raw pointer only narrowed the race
+// (a callback that loaded it just before shutdown could still run inside
+// adapter->OnFrame while android_main destroys the camera). android_main
+// publishes the camera here; every callback pins it through LockCamera()
+// for the whole call, so a late frame hits a live (stopped) adapter.
 std::mutex gCameraMutex;
 std::shared_ptr<questlab::camera::IRgbCameraSource> gCamera;
 
@@ -1690,7 +1690,7 @@ void android_main(android_app* app) {
         app->activity->vm,
         app->activity->clazz,
     };
-    std::unique_ptr<questlab::camera::IRgbCameraSource> camera =
+    std::shared_ptr<questlab::camera::IRgbCameraSource> camera =
         questlab::camera::CreateCameraSource(cameraConfig, cameraPlatform);
     auto* metaCamera = dynamic_cast<questlab::camera::MetaCamera2Adapter*>(
         camera.get());
@@ -1699,7 +1699,13 @@ void android_main(android_app* app) {
         ANativeActivity_finish(app->activity);
         return;
     }
-    gCameraAdapter.store(metaCamera);
+    // Publish for the JNI callbacks. They receive a frame only if this is
+    // set: without it every nativeOnCameraFrame returns early and the
+    // detector never sees a capture (submitted=0 with a healthy link).
+    {
+        std::lock_guard<std::mutex> lock(gCameraMutex);
+        gCamera = camera;
+    }
 
     DetectionScene scene(camera.get(), detectorConfig);
     questlab::XrInstanceContext xrInstance;
@@ -1812,7 +1818,13 @@ void android_main(android_app* app) {
         }
     }
 
-    gCameraAdapter.store(nullptr);
+    {
+        // Withdraw before Stop(): callbacks already holding a pin finish
+        // against the live adapter (which drops stopped frames) instead of
+        // freeing it under their feet.
+        std::lock_guard<std::mutex> lock(gCameraMutex);
+        gCamera.reset();
+    }
     camera->Stop();
     scene.Shutdown();
     if (!androidState.destroyRequested && !app->destroyRequested) {
