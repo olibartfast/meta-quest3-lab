@@ -10,6 +10,7 @@
 #include "object_detector/object_detector.h"
 #include "vulkan_renderer/vulkan_stereo_renderer.h"
 #include "xr_core/vulkan_session_binding.h"
+#include "xr_core/capture_time.h"
 #include "xr_core/xr_controller_actions.h"
 #include "xr_core/xr_error.h"
 #include "xr_core/xr_instance.h"
@@ -24,6 +25,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -75,6 +77,13 @@ bool HasValidPose(XrSpaceLocationFlags flags) {
         XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
     return (flags & kRequired) == kRequired;
 }
+
+// Fallback when the bundled OpenXR headers predate
+// XR_KHR_convert_timespec_time: the extension string is stable API.
+#ifndef XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME
+#define XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME \
+    "XR_KHR_convert_timespec_time"
+#endif
 
 std::vector<uint8_t> CopyByteArray(JNIEnv* environment, jbyteArray array) {
     if (environment == nullptr || array == nullptr) {
@@ -336,10 +345,12 @@ public:
 
     void SubmitCapture(
         questlab::camera::RgbCapture capture,
-        const questlab::math::Pose& localFromHead) {
+        const questlab::math::Pose& localFromHead,
+        bool poseSubstituted) {
         PendingCapture pending{
             std::move(capture),
             localFromHead,
+            poseSubstituted,
         };
         std::lock_guard<std::mutex> lock(inputMutex_);
         if (stopping_) {
@@ -373,6 +384,7 @@ private:
     struct PendingCapture {
         questlab::camera::RgbCapture capture;
         questlab::math::Pose localFromHead;
+        bool poseSubstituted = true;
     };
 
     struct RetainedFrame {
@@ -384,6 +396,7 @@ private:
         questlab::camera::CameraIntrinsics intrinsics;
         questlab::camera::CameraPose cameraCalibration;
         questlab::math::Pose localFromHead;
+        bool poseSubstituted = true;
         std::shared_ptr<const std::vector<uint8_t>> rgba;
     };
 
@@ -565,6 +578,7 @@ private:
         record.intrinsics = pending.capture.intrinsics;
         record.cameraCalibration = pending.capture.cameraFromHead;
         record.localFromHead = pending.localFromHead;
+        record.poseSubstituted = pending.poseSubstituted;
         record.rgba = rgba;
         if (detector_ != nullptr &&
             detector_->Submit(std::move(pending.capture))) {
@@ -606,7 +620,7 @@ private:
         prepared->inferenceMilliseconds = static_cast<float>(
             result.inferenceEndNanoseconds -
             result.inferenceStartNanoseconds) / 1.0e6F;
-        prepared->poseWasSubstituted = true;
+        prepared->poseWasSubstituted = record->poseSubstituted;
         bool projectionSummaryLogged = false;
         for (const questlab::detection::Detection& detection :
              result.detections) {
@@ -929,6 +943,84 @@ public:
         depth_ = std::move(adapter);
     }
 
+    // Capture-time pose plumbing (requirements R-1, R-2). The RGB frustum
+    // must use the head pose at the frame's sensor-capture time, not the
+    // latest render pose: with head motion the two disagree and the frustum
+    // lands on background the depth cloud does not share.
+    void InitializeCapturePose(
+        XrInstance instance,
+        XrSpace viewSpace,
+        XrSpace localSpace) {
+        capturePoseInstance_ = instance;
+        captureViewSpace_ = viewSpace;
+        captureLocalSpace_ = localSpace;
+        convertTimespecTime_ = nullptr;
+        if (instance != XR_NULL_HANDLE) {
+            PFN_xrConvertTimespecTimeToTimeKHR convert = nullptr;
+            const XrResult result = xrGetInstanceProcAddr(
+                instance,
+                "xrConvertTimespecTimeToTimeKHR",
+                reinterpret_cast<PFN_xrVoidFunction*>(&convert));
+            if (result == XR_SUCCESS && convert != nullptr) {
+                convertTimespecTime_ = convert;
+            }
+        }
+        // Explicit clock assumption (R-2): Camera2 REALTIME stamps are
+        // CLOCK_BOOTTIME; the convert extension consumes CLOCK_MONOTONIC.
+        // Equal inside one awake session; the residual log below is the
+        // instrument that would expose a violation.
+        questlab::LogInfo(
+            "Capture-time pose %s: convert-timespec-time %s; Camera2 "
+            "REALTIME/BOOTTIME assumed, JNI timestamp-source check is a "
+            "follow-on",
+            convertTimespecTime_ != nullptr ? "enabled" : "disabled",
+            convertTimespecTime_ != nullptr ? "present" : "absent");
+    }
+
+    // Locate head at RGB capture time. Returns true with a measured pose;
+    // otherwise the caller keeps the render-time pose and records substituted.
+    bool LocateHeadAtCapture(
+        int64_t sensorTimestampNanoseconds,
+        XrTime referenceTime,
+        questlab::math::Pose* pose,
+        int64_t* residualNanoseconds) {
+        if (convertTimespecTime_ == nullptr ||
+            captureViewSpace_ == XR_NULL_HANDLE ||
+            captureLocalSpace_ == XR_NULL_HANDLE || pose == nullptr) {
+            return false;
+        }
+        const questlab::SensorTimespec parts =
+            questlab::SensorNanosToTimespec(sensorTimestampNanoseconds);
+        if (parts.tvSec <= 0) {
+            return false;
+        }
+        struct timespec captureTimespec{};
+        captureTimespec.tv_sec = static_cast<time_t>(parts.tvSec);
+        captureTimespec.tv_nsec = static_cast<long>(parts.tvNsec);
+        XrTime captureTime = 0;
+        if (convertTimespecTime_(
+                capturePoseInstance_, &captureTimespec, &captureTime) !=
+                XR_SUCCESS ||
+            captureTime <= 0) {
+            return false;
+        }
+        XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+        if (xrLocateSpace(
+                captureViewSpace_,
+                captureLocalSpace_,
+                captureTime,
+                &location) != XR_SUCCESS ||
+            !HasValidPose(location.locationFlags)) {
+            return false;
+        }
+        *pose = questlab::math::FromXr(location.pose);
+        if (residualNanoseconds != nullptr) {
+            *residualNanoseconds = questlab::CaptureResidualNanoseconds(
+                referenceTime, captureTime);
+        }
+        return true;
+    }
+
     bool StartDetector() {
         if (detectorRunning_) {
             return true;
@@ -1004,8 +1096,45 @@ public:
         }
         questlab::camera::RgbCapture capture;
         if (headPoseValid_ && source_->TryConsumeLatest(&capture)) {
+            // Capture-time pose (R-1): the frustum must be built from where
+            // the head was when the sensor exposed, not where it is now.
+            questlab::math::Pose submitPose = latestLocalFromHead_;
+            bool substituted = true;
+            int64_t residualNs = 0;
+            if (LocateHeadAtCapture(
+                    capture.sensorTimestampNanoseconds,
+                    frame.predictedDisplayTime,
+                    &submitPose,
+                    &residualNs)) {
+                const questlab::CapturePoseVerdict verdict =
+                    questlab::DecideCapturePose(
+                        /*extensionAvailable=*/true,
+                        /*locateSucceeded=*/true,
+                        /*locateValid=*/true,
+                        residualNs);
+                substituted = verdict.substituted;
+                if (substituted) {
+                    submitPose = latestLocalFromHead_;
+                }
+            }
+            if (substituted) {
+                ++capturePoseSubstituted_;
+            } else {
+                ++capturePoseMeasured_;
+            }
+            lastCaptureResidualNs_ = residualNs;
+            const int64_t nowNs = MonotonicNanoseconds();
+            if (nowNs - lastCapturePoseLogNs_ >= 5000000000LL) {
+                lastCapturePoseLogNs_ = nowNs;
+                questlab::LogInfo(
+                    "CAPTURE_POSE measured=%llu substituted=%llu "
+                    "last_residual_ms=%.1f",
+                    static_cast<unsigned long long>(capturePoseMeasured_),
+                    static_cast<unsigned long long>(capturePoseSubstituted_),
+                    static_cast<double>(lastCaptureResidualNs_) / 1.0e6);
+            }
             pipeline_.SubmitCapture(
-                std::move(capture), latestLocalFromHead_);
+                std::move(capture), submitPose, substituted);
         }
 
         const PipelineSnapshot snapshot = pipeline_.Snapshot();
@@ -1267,6 +1396,14 @@ private:
     bool toggleWasPressed_ = false;
     bool hasImage_ = false;
     bool backendDetailsLogged_ = false;
+    XrInstance capturePoseInstance_ = XR_NULL_HANDLE;
+    XrSpace captureViewSpace_ = XR_NULL_HANDLE;
+    XrSpace captureLocalSpace_ = XR_NULL_HANDLE;
+    PFN_xrConvertTimespecTimeToTimeKHR convertTimespecTime_ = nullptr;
+    uint64_t capturePoseMeasured_ = 0;
+    uint64_t capturePoseSubstituted_ = 0;
+    int64_t lastCaptureResidualNs_ = 0;
+    int64_t lastCapturePoseLogNs_ = 0;
 };
 
 void HandleAppCommand(android_app* app, int32_t command) {
@@ -1516,6 +1653,9 @@ void android_main(android_app* app) {
             XR_FB_PASSTHROUGH_EXTENSION_NAME,
             XR_META_ENVIRONMENT_DEPTH_EXTENSION_NAME,
         },
+        {
+            XR_KHR_CONVERT_TIMESPEC_TIME_EXTENSION_NAME,
+        },
     };
     const questlab::VulkanRendererOptions rendererOptions{true};
     bool cameraRequested = false;
@@ -1551,6 +1691,10 @@ void android_main(android_app* app) {
             xrSession.Session(),
             xrSession.LocalSpace(),
             vulkanBinding.DeviceContext());
+        scene.InitializeCapturePose(
+            xrInstance.Instance(),
+            xrSession.ViewSpace(),
+            xrSession.LocalSpace());
         while (!androidState.destroyRequested && !app->destroyRequested &&
                !xrSession.ShouldExit()) {
             const int timeoutMilliseconds =
