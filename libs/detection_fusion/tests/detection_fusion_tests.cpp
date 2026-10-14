@@ -516,6 +516,152 @@ int main() {
             "zero width must fail");
     }
 
+    // Learned third source: wire values frozen for the C API contract.
+    {
+        passed &= Expect(
+            static_cast<int>(questlab::fusion::RangeSource::Stereo) == 0,
+            "Stereo wire value stays 0");
+        passed &= Expect(
+            static_cast<int>(
+                questlab::fusion::RangeSource::EnvDepthFallback) == 1,
+            "EnvDepthFallback wire value stays 1");
+        passed &= Expect(
+            static_cast<int>(questlab::fusion::RangeSource::Prior) == 2,
+            "Prior wire value stays 2");
+        passed &= Expect(
+            static_cast<int>(questlab::fusion::RangeSource::Learned) == 3,
+            "Learned wire value is 3");
+    }
+
+    // Learned agreement: never outranks a measured source.
+    {
+        questlab::fusion::RangeSource source =
+            questlab::fusion::RangeSource::Prior;
+        // Env agreed: env kept, Learned stays a comparison source.
+        passed &= Expect(
+            questlab::fusion::CheckLearnedAgreement(
+                true, 2.0F, true, 2.05F, 0.1F, 0.05F, &source) ==
+                questlab::fusion::AgreementVerdict::FallbackEnv &&
+                source ==
+                    questlab::fusion::RangeSource::EnvDepthFallback,
+            "agreed env beats learned");
+        // Env invalid: degraded learned fallback.
+        passed &= Expect(
+            questlab::fusion::CheckLearnedAgreement(
+                true, 2.0F, false, 0.0F, 0.1F, 0.05F, &source) ==
+                questlab::fusion::AgreementVerdict::FallbackLearned &&
+                source == questlab::fusion::RangeSource::Learned,
+            "learned fallback when env invalid");
+        // Disagreement: Hide, never a learned box.
+        passed &= Expect(
+            questlab::fusion::CheckLearnedAgreement(
+                true, 2.0F, true, 4.0F, 0.1F, 0.05F, &source) ==
+                questlab::fusion::AgreementVerdict::Hide &&
+                source == questlab::fusion::RangeSource::Prior,
+            "learned/env disagreement hides");
+        // Both invalid: Hide.
+        passed &= Expect(
+            questlab::fusion::CheckLearnedAgreement(
+                false, 0.0F, false, 0.0F, 0.1F, 0.05F, &source) ==
+                questlab::fusion::AgreementVerdict::Hide,
+            "both invalid hides");
+        // Null output pointer must not crash.
+        passed &= Expect(
+            questlab::fusion::CheckLearnedAgreement(
+                true, 2.0F, false, 0.0F, 0.1F, 0.05F, nullptr) ==
+                questlab::fusion::AgreementVerdict::FallbackLearned,
+            "null source output is safe");
+    }
+
+    // Affine-in-disparity alignment: exact recovery on a synthetic plane.
+    {
+        std::vector<questlab::fusion::MonoAlignSample> samples;
+        for (int i = 1; i <= 10; ++i) {
+            const float depth = 0.5F * static_cast<float>(i);
+            samples.push_back({2.0F / depth + 0.5F, depth});
+        }
+        questlab::fusion::MonoAlignResult result;
+        std::string reason = "unset";
+        passed &= Expect(
+            questlab::fusion::AlignMonoDisparity(
+                samples, 64, 1e-4F, 0.5F, &result, &reason),
+            "exact plane must align");
+        passed &= Expect(
+            result.valid && std::fabs(result.scale - 2.0F) < 1e-3F &&
+                std::fabs(result.shift - 0.5F) < 1e-3F,
+            "exact plane must recover scale=2 shift=0.5");
+        passed &= Expect(reason.empty(), "reason cleared on success");
+    }
+
+    // Alignment robustness: 30% gross outliers must not move the fit.
+    {
+        std::vector<questlab::fusion::MonoAlignSample> samples;
+        for (int i = 1; i <= 20; ++i) {
+            const float depth = 0.25F * static_cast<float>(i);
+            samples.push_back({3.0F / depth - 0.25F, depth});
+        }
+        for (int i = 0; i < 9; ++i) {
+            samples.push_back({50.0F + static_cast<float>(i), 1.0F});
+        }
+        questlab::fusion::MonoAlignResult result;
+        std::string reason;
+        passed &= Expect(
+            questlab::fusion::AlignMonoDisparity(
+                samples, 200, 1e-3F, 0.5F, &result, &reason),
+            "outlier-contaminated plane must align");
+        passed &= Expect(
+            result.valid && std::fabs(result.scale - 3.0F) < 0.05F &&
+                std::fabs(result.shift + 0.25F) < 0.05F,
+            "outliers must not move scale/shift");
+        passed &= Expect(
+            result.inlierRatio > 0.6F && result.inlierRatio < 0.8F,
+            "inlier ratio must reflect the contamination");
+    }
+
+    // Alignment refusal: degenerate geometry and bad inputs.
+    {
+        questlab::fusion::MonoAlignResult result;
+        std::string reason;
+        // All samples at the same depth: no distinct inverse depths.
+        passed &= Expect(
+            !questlab::fusion::AlignMonoDisparity(
+                std::vector<questlab::fusion::MonoAlignSample>{
+                    {1.0F, 2.0F}, {1.5F, 2.0F}, {0.5F, 2.0F}},
+                64,
+                1e-4F,
+                0.5F,
+                &result,
+                &reason),
+            "collinear samples must be refused");
+        passed &= Expect(
+            !reason.empty() && !result.valid, "refusal carries a reason");
+        // Empty and non-positive depths.
+        passed &= Expect(
+            !questlab::fusion::AlignMonoDisparity(
+                {}, 64, 1e-4F, 0.5F, &result, &reason),
+            "empty samples must be refused");
+        passed &= Expect(
+            !questlab::fusion::AlignMonoDisparity(
+                std::vector<questlab::fusion::MonoAlignSample>{
+                    {1.0F, -2.0F}, {1.5F, 0.0F}},
+                64,
+                1e-4F,
+                0.5F,
+                &result,
+                &reason),
+            "non-positive depths must be refused");
+        // Null result output.
+        passed &= Expect(
+            !questlab::fusion::AlignMonoDisparity(
+                std::vector<questlab::fusion::MonoAlignSample>{{1.0F, 2.0F}},
+                64,
+                1e-4F,
+                0.5F,
+                nullptr,
+                &reason),
+            "null result must be refused");
+    }
+
     if (passed) {
         std::cout << "detection fusion tests passed\n";
     }

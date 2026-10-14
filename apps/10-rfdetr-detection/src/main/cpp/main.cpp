@@ -1226,6 +1226,19 @@ public:
                             1.0F,
                         };
                     }
+                    // Learned monocular prior (R-3): violet, distinct from
+                    // green measured and amber env-fallback, so a prior is
+                    // never silently primary. Confidence is scaled by
+                    // kLearnedConfidenceFactor at fallback selection.
+                    if (fused.rangeSource ==
+                        questlab::fusion::RangeSource::Learned) {
+                        boxColor = {
+                            0.55F * ageBrightness,
+                            0.35F * ageBrightness,
+                            1.0F * ageBrightness,
+                            1.0F,
+                        };
+                    }
                     // RangeSource::Prior must never render: it is the
                     // unset/hide sentinel and hasBox=false covers it.
                     draws->push_back({

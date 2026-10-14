@@ -77,7 +77,8 @@ typedef struct QvSizePrior {
 } QvSizePrior;
 
 // Mirrors FusedBox. rangeSource: 0 = Stereo, 1 = EnvDepthFallback,
-// 2 = Prior (unset/hide sentinel).
+// 2 = Prior (unset/hide sentinel), 3 = Learned (monocular prior, flagged).
+// Wire values are frozen: append-only on the C++ enum side.
 typedef struct QvFusedBox {
     QvVec3 center;
     QvVec3 halfExtents;

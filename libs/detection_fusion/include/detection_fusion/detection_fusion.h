@@ -85,11 +85,18 @@ struct FusionParameters {
 // Provenance for the hybrid stereo-primary / env-depth-secondary design.
 // Stereo supplies the representative range; env-depth agrees, falls back
 // degraded, or loses. A mixed box is never presented as fully measured.
+// Learned (appended last, wire value 3) is monocular learned depth: a prior,
+// never primary. Existing wire values 0/1/2 are frozen for the C API.
 enum class RangeSource {
     Stereo,
     EnvDepthFallback,
     Prior,
+    Learned,
 };
+
+// Confidence multiplier the caller applies when emitting a Learned fallback
+// box (R-3 mission discipline: a prior, not a measurement).
+inline constexpr float kLearnedConfidenceFactor = 0.5F;
 
 // An oriented cuboid: the thing a 2D box plus depth can actually support.
 struct FusedBox {
@@ -124,6 +131,8 @@ enum class AgreementVerdict {
     AgreeStereo,   // within tolerance: emit stereo box
     FallbackEnv,   // stereo invalid, env valid: emit degraded, flagged
     Hide,          // disagreement or both invalid: draw nothing
+    FallbackLearned,  // env invalid, learned valid: emit degraded, flagged,
+                      // confidence scaled by kLearnedConfidenceFactor
 };
 
 AgreementVerdict CheckAgreement(
@@ -134,6 +143,47 @@ AgreementVerdict CheckAgreement(
     float toleranceMeters,
     float toleranceRatio,
     RangeSource* selectedSource);
+
+// Learned monocular depth as third source (R-1): it never outranks a measured
+// source. Env agreed: env kept (Learned stays a comparison source for G-3).
+// Env invalid + learned valid: degraded learned fallback. Disagreement or
+// both invalid: Hide (Q-2 default).
+AgreementVerdict CheckLearnedAgreement(
+    bool learnedValid,
+    float learnedRangeMeters,
+    bool envValid,
+    float envRangeMeters,
+    float toleranceMeters,
+    float toleranceRatio,
+    RangeSource* selectedSource);
+
+// One learned-disparity sample paired with metric env depth at the same pixel.
+// Only env-valid pixels may be supplied; non-positive env depth is skipped.
+struct MonoAlignSample {
+    float disparity = 0.0F;
+    float envDepthMeters = 0.0F;
+};
+
+struct MonoAlignResult {
+    // disparity = scale * (1 / depth) + shift.
+    float scale = 0.0F;
+    float shift = 0.0F;
+    float inlierRatio = 0.0F;
+    bool valid = false;
+};
+
+// Robust affine-in-disparity fit of relative learned disparity against metric
+// env depth (R-2, mandatory: a wrong shift bends planes and corrupts the very
+// normal the fit is for). RANSAC over minimal pairs in disparity space, least
+// squares refinement on inliers. Refuses degenerate geometry (fewer than two
+// distinct inverse depths, non-positive scale) with a reason.
+bool AlignMonoDisparity(
+    const std::vector<MonoAlignSample>& samples,
+    int ransacIterations,
+    float inlierDisparityTolerance,
+    float minimumInlierRatio,
+    MonoAlignResult* result,
+    std::string* reason);
 
 // Pinhole range image to LOCAL points for the host/identity-pose case.
 // Camera frame is +Z-forward/+Y-down (Camera2 basis); output flips to
