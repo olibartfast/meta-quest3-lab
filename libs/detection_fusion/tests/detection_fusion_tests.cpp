@@ -231,6 +231,153 @@ int main() {
             "tilted box centre must stay at the slab distance");
     }
 
+    // Regression: a screen almost parallel to a LOCAL axis must keep its
+    // in-plane orientation when the fitted normal jitters across the old
+    // axis-selection threshold (~11.5 degrees from a reference axis). On the
+    // device a monitor in exactly this geometry made the box snap between the
+    // X and Y projections, rotating it by more than 90 degrees against head
+    // motion for a surface that had not moved.
+    {
+        constexpr float kPi = 3.14159265F;
+        const auto fuseScreen = [&](float tiltRadians,
+                                    questlab::fusion::FusedBox* boxOut) {
+            const questlab::math::Vec3 normal{
+                std::cos(tiltRadians), std::sin(tiltRadians), 0.0F};
+            const questlab::math::Vec3 center{0.0F, 0.0F, -2.0F};
+            questlab::math::Vec3 u =
+                questlab::math::Cross(normal, {0.0F, 1.0F, 0.0F});
+            questlab::math::Normalize(&u);
+            questlab::math::Vec3 v = questlab::math::Cross(normal, u);
+            questlab::math::Normalize(&v);
+            std::vector<questlab::math::Vec3> points;
+            for (int ix = -8; ix <= 8; ++ix) {
+                for (int iy = -8; iy <= 8; ++iy) {
+                    const float fx = static_cast<float>(ix) / 8.0F;
+                    const float fy = static_cast<float>(iy) / 8.0F;
+                    points.push_back(questlab::math::Add(
+                        center,
+                        questlab::math::Add(
+                            questlab::math::Scale(u, fx * 0.12F),
+                            questlab::math::Scale(v, fy * 0.12F))));
+                }
+            }
+            std::string reason;
+            const bool ok = questlab::fusion::FuseDetection(
+                frustum, points, parameters, {}, boxOut, &reason);
+            if (!ok) {
+                std::cerr << "screen fusion refused: " << reason << "\n";
+            }
+            return ok;
+        };
+        questlab::fusion::FusedBox lowBox;
+        questlab::fusion::FusedBox highBox;
+        passed &= Expect(
+            fuseScreen(9.0F * kPi / 180.0F, &lowBox),
+            "a screen 9 degrees off a LOCAL axis must fuse");
+        passed &= Expect(
+            fuseScreen(15.0F * kPi / 180.0F, &highBox),
+            "a screen 15 degrees off a LOCAL axis must fuse");
+        const questlab::math::Vec3 lowUp = questlab::math::Rotate(
+            lowBox.orientationInLocal, {0.0F, 1.0F, 0.0F});
+        const questlab::math::Vec3 highUp = questlab::math::Rotate(
+            highBox.orientationInLocal, {0.0F, 1.0F, 0.0F});
+        passed &= Expect(
+            lowUp.y > 0.9F && highUp.y > 0.9F,
+            "a near-vertical screen must keep world up as its box up");
+        const float dotInProduct = std::fabs(
+            lowBox.orientationInLocal.x * highBox.orientationInLocal.x +
+            lowBox.orientationInLocal.y * highBox.orientationInLocal.y +
+            lowBox.orientationInLocal.z * highBox.orientationInLocal.z +
+            lowBox.orientationInLocal.w * highBox.orientationInLocal.w);
+        const float separationDegrees = 2.0F *
+            std::acos(std::min(1.0F, dotInProduct)) * 180.0F / kPi;
+        passed &= Expect(
+            separationDegrees < 8.0F,
+            "normals straddling the old threshold must not flip the box");
+    }
+
+    // A screen facing the viewer reads off a monitor: box up must be LOCAL
+    // up and box right must be LOCAL right.
+    {
+        const questlab::math::Vec3 normal{0.0F, 0.0F, -1.0F};
+        const questlab::math::Vec3 center{0.0F, 0.0F, -2.0F};
+        std::vector<questlab::math::Vec3> points;
+        for (int ix = -8; ix <= 8; ++ix) {
+            for (int iy = -8; iy <= 8; ++iy) {
+                const float fx = static_cast<float>(ix) / 8.0F;
+                const float fy = static_cast<float>(iy) / 8.0F;
+                points.push_back({center.x + fx * 0.12F,
+                                  center.y + fy * 0.12F,
+                                  center.z});
+            }
+        }
+        questlab::fusion::FusedBox box;
+        std::string reason;
+        passed &= Expect(
+            questlab::fusion::FuseDetection(
+                frustum, points, parameters, {}, &box, &reason),
+            reason.empty() ? "frontal screen fusion must succeed"
+                           : reason.c_str());
+        const questlab::math::Vec3 boxUp = questlab::math::Rotate(
+            box.orientationInLocal, {0.0F, 1.0F, 0.0F});
+        const questlab::math::Vec3 boxRight = questlab::math::Rotate(
+            box.orientationInLocal, {1.0F, 0.0F, 0.0F});
+        const questlab::math::Vec3 boxBack = questlab::math::Rotate(
+            box.orientationInLocal, {0.0F, 0.0F, 1.0F});
+        passed &= Expect(
+            boxUp.y > 0.99F,
+            "a frontal screen must keep LOCAL up as its box up");
+        passed &= Expect(
+            boxRight.x > 0.99F,
+            "a frontal screen must keep LOCAL right as its box right");
+        passed &= Expect(
+            questlab::math::Dot(boxBack, questlab::math::Scale(normal, -1.0F)) >
+                0.99F,
+            "a frontal screen must face the viewer");
+    }
+
+    // A near-horizontal surface (a desk) has no meaningful up: the axis
+    // projection rule must take over, and the box must still carry the
+    // measured plane rather than refusing.
+    {
+        constexpr float kPi = 3.14159265F;
+        const float deskTilt = 8.0F * kPi / 180.0F;
+        const questlab::math::Vec3 normal{
+            0.0F, std::cos(deskTilt), -std::sin(deskTilt)};
+        const questlab::math::Vec3 center{0.0F, -0.30F, -2.0F};
+        const questlab::math::Vec3 u{1.0F, 0.0F, 0.0F};
+        questlab::math::Vec3 v = questlab::math::Cross(normal, u);
+        questlab::math::Normalize(&v);
+        std::vector<questlab::math::Vec3> points;
+        for (int ix = -8; ix <= 8; ++ix) {
+            for (int iy = -8; iy <= 8; ++iy) {
+                const float fx = static_cast<float>(ix) / 8.0F;
+                const float fy = static_cast<float>(iy) / 8.0F;
+                points.push_back(questlab::math::Add(
+                    center,
+                    questlab::math::Add(
+                        questlab::math::Scale(u, fx * 0.12F),
+                        questlab::math::Scale(v, fy * 0.12F))));
+            }
+        }
+        questlab::fusion::FusedBox box;
+        std::string reason;
+        passed &= Expect(
+            questlab::fusion::FuseDetection(
+                frustum, points, parameters, {}, &box, &reason),
+            reason.empty() ? "desk fusion must succeed" : reason.c_str());
+        const questlab::math::Vec3 boxBack = questlab::math::Rotate(
+            box.orientationInLocal, {0.0F, 0.0F, 1.0F});
+        const questlab::math::Vec3 boxUp = questlab::math::Rotate(
+            box.orientationInLocal, {0.0F, 1.0F, 0.0F});
+        passed &= Expect(
+            std::fabs(questlab::math::Dot(boxBack, normal)) > 0.99F,
+            "a desk must keep the measured plane normal");
+        passed &= Expect(
+            std::fabs(boxUp.y) < 0.3F,
+            "a desk has no world up: the box up lies in the surface");
+    }
+
     // With a size prior the near face must stay where depth measured it and
     // the box must grow away from the viewer, not straddle the surface.
     {
