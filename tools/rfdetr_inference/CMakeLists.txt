@@ -43,13 +43,6 @@ if(NOT TARGET camera_source)
         ${CMAKE_CURRENT_BINARY_DIR}/camera_source
     )
 endif()
-if(NOT TARGET monitor_corners)
-    add_subdirectory(
-        ${CMAKE_CURRENT_LIST_DIR}/../monitor_corners
-        ${CMAKE_CURRENT_BINARY_DIR}/monitor_corners
-    )
-endif()
-
 add_library(rfdetr_inference_core STATIC
     src/detection_io.cpp
     src/json_value.cpp
@@ -168,6 +161,15 @@ if(QUESTLAB_RFDETR_BUILD_TOOL)
         -Wpedantic
     )
     if(UNIX)
+        # monitor_corners is host-only (host OpenCV, calib3d): adding it
+        # unconditionally would drag find_package(OpenCV) into Android
+        # device builds through libs/object_detector.
+        if(NOT TARGET monitor_corners)
+            add_subdirectory(
+                ${CMAKE_CURRENT_LIST_DIR}/../monitor_corners
+                ${CMAKE_CURRENT_BINARY_DIR}/monitor_corners
+            )
+        endif()
         add_executable(rfdetr_service src/service_main.cpp)
         target_link_libraries(rfdetr_service PRIVATE
             rfdetr_inference_core
