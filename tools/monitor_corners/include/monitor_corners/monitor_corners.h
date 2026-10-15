@@ -52,6 +52,18 @@ bool FindScreenQuad(
     Quad* quad,
     std::string* error);
 
+// Largest quad in a binary instance mask (row-major, nonzero is
+// foreground: the seg-model path). Same TL/TR/BR/BL order and aspect
+// gates as FindScreenQuad, but no subpixel refinement: a binary mask
+// carries no gradients, so pixel vertices are the measurement. Score
+// is the quad area share of the mask foreground (rectangularity).
+bool FindScreenQuadFromMask(
+    const uint8_t* mask,
+    int width,
+    int height,
+    Quad* quad,
+    std::string* error);
+
 // Pose of the taped W×H display rectangle from its 4 image corners.
 // Reprojection RMS (pixels) reports the fit; large values mean the quad
 // is not the screen (wrong pairing or bent contour) — distrust the pose.
