@@ -32,7 +32,8 @@ later matcher phase; proposed item text in `plan.md`).
    quaternion (x, y, z, w) + position in metres; Camera2 basis +X right,
    +Y down, +Z forward; metres/pixels — matching `libs/screen_corners`. The
    caller supplies 3D object points; non-coplanar AND coplanar sets must both
-   solve through one path (no separate planar branch).
+   solve (coplanar sets use a plane-homography branch; deviation D-1 in
+   `validation.md`).
 4. Determinism: fixed default seed, no hidden global state, identical inputs →
    identical (bit-identical) outputs.
 5. API style: `bool Function(..., std::string* error)` fail-closed with short

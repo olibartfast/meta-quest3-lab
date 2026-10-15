@@ -333,7 +333,7 @@ void TestOutliers() {
             ++agreement;
         }
     }
-    assert(agreement >= 19);  // >= 95% of 40
+    assert(agreement >= 38);  // >= 95% of 40
     std::printf(
         "  outliers 50%% n=%d mask_agreement=%d/%d position_error=%.3e m rotation_error=%.4f deg\n",
         total, agreement, total, positionError, rotationError * 180.0 / kPi);
@@ -501,6 +501,19 @@ void TestDegenerateAndRefusal() {
         assert(!SolvePose(
             bad.data(), static_cast<int>(bad.size()), k, Options{}, &result,
             &error));
+        assert(error == "non-finite correspondence");
+        AssertAllFieldsFinite(result);
+    }
+
+    // non-finite input outranks bad intrinsics in the documented order
+    {
+        std::vector<Correspondence> bad = correspondences;
+        bad[1].pixel.x = std::nanf("");
+        Intrinsics badIntrinsics = k;
+        badIntrinsics.fx = 0.0F;
+        assert(!SolvePose(
+            bad.data(), static_cast<int>(bad.size()), badIntrinsics,
+            Options{}, &result, &error));
         assert(error == "non-finite correspondence");
         AssertAllFieldsFinite(result);
     }
