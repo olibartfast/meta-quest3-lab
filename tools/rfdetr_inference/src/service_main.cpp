@@ -198,8 +198,8 @@ bool ReceiveFloat(int socket, float* value) {
     return true;
 }
 
-// Mask-capable inference dispatch: ONNX sessions serve seg contracts via
-// RunWithMasks; Triton seg outputs are not wired yet and fail closed.
+// Mask-capable inference dispatch: ONNX and Triton sessions both serve seg
+// contracts via RunWithMasks; box-only contracts never reach this path.
 bool RunServiceMasks(
     questlab::rfdetr::OnnxSession* session,
     const std::vector<float>& input,
@@ -213,18 +213,15 @@ bool RunServiceMasks(
 }
 
 bool RunServiceMasks(
-    questlab::rfdetr::TritonSession*,
-    const std::vector<float>&,
-    std::vector<float>*,
-    std::vector<float>*,
-    std::vector<float>*,
-    std::vector<int64_t>*,
+    questlab::rfdetr::TritonSession* session,
+    const std::vector<float>& input,
+    std::vector<float>* boxes,
+    std::vector<float>* logits,
+    std::vector<float>* masks,
+    std::vector<int64_t>* maskShape,
     std::string* error) {
-    if (error != nullptr) {
-        *error = "Seg contracts need an ONNX session; Triton seg outputs "
-                 "are not wired";
-    }
-    return false;
+    return session->RunWithMasks(input, boxes, logits, masks, maskShape,
+                                 error);
 }
 
 struct ServedCorners {
