@@ -1,5 +1,7 @@
 #include "rfdetr_inference/triton_session.h"
 
+#include <numeric>
+
 #if defined(QUESTLAB_HAS_TRITON)
 #include <http_client.h>
 namespace tc = triton::client;
@@ -16,6 +18,11 @@ public:
     std::string modelName = "rfdetr_nano";
     std::string modelVersion = "1";
     std::vector<int64_t> inputShape;
+    // Seg contracts (RF-DETR-Seg) carry a third "masks" output; box-only
+    // contracts leave this false and mask retrieval fails closed.
+    bool hasMasks = false;
+    std::string maskOutputName;
+    std::vector<int64_t> maskShape;
     bool initialized = false;
 };
 
@@ -42,7 +49,13 @@ bool TritonSession::Initialize(
     }
     return false;
 #else
-    if (contract.input.shape.size() != 4U || contract.outputs.size() != 2U) {
+    const bool boxOnlyContract = contract.outputs.size() == 2U;
+    const bool segContract =
+        contract.outputs.size() == 3U &&
+        contract.outputs[2].shape.size() == 4U &&
+        !contract.outputs[2].name.empty();
+    if (contract.input.shape.size() != 4U ||
+        (!boxOnlyContract && !segContract)) {
         if (error != nullptr) {
             *error = "RF-DETR contract dimensions are invalid for Triton";
         }
@@ -81,6 +94,11 @@ bool TritonSession::Initialize(
     impl_->modelName = modelName;
     impl_->modelVersion = modelVersion;
     impl_->inputShape = contract.input.shape;
+    impl_->hasMasks = segContract;
+    if (segContract) {
+        impl_->maskOutputName = contract.outputs[2].name;
+        impl_->maskShape = contract.outputs[2].shape;
+    }
     impl_->initialized = true;
     return true;
 #endif
@@ -91,10 +109,22 @@ bool TritonSession::Run(
     std::vector<float>* boxes,
     std::vector<float>* logits,
     std::string* error) {
+    return RunWithMasks(inputTensor, boxes, logits, nullptr, nullptr, error);
+}
+
+bool TritonSession::RunWithMasks(
+    const std::vector<float>& inputTensor,
+    std::vector<float>* boxes,
+    std::vector<float>* logits,
+    std::vector<float>* masks,
+    std::vector<int64_t>* maskShape,
+    std::string* error) {
 #if !defined(QUESTLAB_HAS_TRITON)
     (void)inputTensor;
     (void)boxes;
     (void)logits;
+    (void)masks;
+    (void)maskShape;
     if (error != nullptr) {
         *error = "Triton backend is not compiled in";
     }
@@ -109,6 +139,13 @@ bool TritonSession::Run(
     if (boxes == nullptr || logits == nullptr) {
         if (error != nullptr) {
             *error = "Triton output pointer is null";
+        }
+        return false;
+    }
+    const bool wantMasks = masks != nullptr || maskShape != nullptr;
+    if (wantMasks && !impl_->hasMasks) {
+        if (error != nullptr) {
+            *error = "Mask retrieval requested from a box-only Triton model";
         }
         return false;
     }
@@ -163,11 +200,28 @@ bool TritonSession::Run(
         }
         return false;
     }
+    tc::InferRequestedOutput* rawMasks = nullptr;
+    if (wantMasks) {
+        err = tc::InferRequestedOutput::Create(
+            &rawMasks, impl_->maskOutputName);
+        if (!err.IsOk()) {
+            delete rawDets;
+            delete rawLabels;
+            if (error != nullptr) {
+                *error = "Triton output creation failed: " + err.Message();
+            }
+            return false;
+        }
+    }
     std::unique_ptr<tc::InferRequestedOutput> detsOut(rawDets);
     std::unique_ptr<tc::InferRequestedOutput> labelsOut(rawLabels);
+    std::unique_ptr<tc::InferRequestedOutput> masksOut(rawMasks);
     std::vector<tc::InferInput*> inputPtrs{input.get()};
     std::vector<const tc::InferRequestedOutput*> outputPtrs{
         detsOut.get(), labelsOut.get()};
+    if (wantMasks) {
+        outputPtrs.push_back(masksOut.get());
+    }
     tc::InferOptions options(impl_->modelName);
     options.model_version_ = impl_->modelVersion;
     tc::InferResult* rawResult = nullptr;
@@ -202,6 +256,39 @@ bool TritonSession::Run(
     const auto* labelsPtr = reinterpret_cast<const float*>(labelsBytesPtr);
     boxes->assign(detsPtr, detsPtr + detsBytes / sizeof(float));
     logits->assign(labelsPtr, labelsPtr + labelsBytes / sizeof(float));
+    if (wantMasks) {
+        const uint8_t* masksBytesPtr = nullptr;
+        size_t masksBytes = 0;
+        err = result->RawData(
+            impl_->maskOutputName, &masksBytesPtr, &masksBytes);
+        if (!err.IsOk()) {
+            if (error != nullptr) {
+                *error = "Triton masks output missing: " + err.Message();
+            }
+            return false;
+        }
+        const size_t maskCount = std::accumulate(
+            impl_->maskShape.begin(),
+            impl_->maskShape.end(),
+            size_t{1},
+            [](size_t product, int64_t dimension) {
+                return product * static_cast<size_t>(dimension);
+            });
+        if (masksBytes < maskCount * sizeof(float)) {
+            if (error != nullptr) {
+                *error = "Triton masks output size does not match the contract";
+            }
+            return false;
+        }
+        if (masks != nullptr) {
+            const auto* masksPtr =
+                reinterpret_cast<const float*>(masksBytesPtr);
+            masks->assign(masksPtr, masksPtr + maskCount);
+        }
+        if (maskShape != nullptr) {
+            *maskShape = impl_->maskShape;
+        }
+    }
     return true;
 #endif
 }
