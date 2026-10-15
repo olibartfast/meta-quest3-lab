@@ -36,6 +36,14 @@ struct ModelContract {
     bool antialias = true;
 
     std::vector<TensorContract> outputs;
+    // Instance-segmentation extension (RF-DETR-Seg, streaming-host-first).
+    // False for box-only contracts (nano/medium). True when a third
+    // float32 "masks" output [1, queries, H, W] is present; the mask
+    // resolution is the model's native mask grid, not the source image.
+    bool hasMasks = false;
+    std::string maskOutputName;
+    int64_t maskHeight = 0;
+    int64_t maskWidth = 0;
     std::string classIndexSpace;
     int32_t classLogitSlots = 0;
     std::unordered_map<int32_t, std::string> classNames;

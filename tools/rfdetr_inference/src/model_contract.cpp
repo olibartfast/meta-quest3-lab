@@ -85,11 +85,12 @@ bool NearlyEqual(float first, float second) {
     return std::fabs(first - second) <= 1.0e-7F;
 }
 
-void ValidateSupportedContract(const ModelContract& contract) {
+void ValidateSupportedContract(ModelContract& contract) {
     Require(contract.schema == "QUESTLAB_RFDETR_MODEL_V1", "schema");
     Require(contract.family == "RF-DETR", "model family");
     Require(
-        contract.variant == "nano" || contract.variant == "medium",
+        contract.variant == "nano" || contract.variant == "medium" ||
+            contract.variant == "seg-small",
         "model variant");
     Require(contract.onnxOpset == 17, "ONNX opset");
     Require(
@@ -112,7 +113,9 @@ void ValidateSupportedContract(const ModelContract& contract) {
         contract.coordinateTransform == "half_pixel",
         "resize coordinate transform");
     Require(!contract.antialias, "resize antialias setting");
-    Require(contract.outputs.size() == 2U, "output count");
+    Require(
+        contract.outputs.size() == 2U || contract.outputs.size() == 3U,
+        "output count");
     Require(contract.outputs[0].name == "dets", "box output name");
     Require(
         contract.outputs[0].elementType == "float32" &&
@@ -125,6 +128,24 @@ void ValidateSupportedContract(const ModelContract& contract) {
         contract.outputs[1].shape == std::vector<int64_t>({1, 300, 91}) &&
         contract.outputs[1].meaning == "per_query_class_logits",
         "label output contract");
+    contract.hasMasks = false;
+    contract.maskOutputName.clear();
+    contract.maskHeight = 0;
+    contract.maskWidth = 0;
+    if (contract.outputs.size() == 3U) {
+        const TensorContract& masks = contract.outputs[2];
+        Require(masks.name == "masks", "mask output name");
+        Require(
+            masks.elementType == "float32" && masks.shape.size() == 4U &&
+            masks.shape[0] == 1 && masks.shape[1] == 300 &&
+            masks.shape[2] > 0 && masks.shape[3] > 0 &&
+            masks.meaning == "per_query_instance_masks",
+            "mask output contract");
+        contract.hasMasks = true;
+        contract.maskOutputName = masks.name;
+        contract.maskHeight = masks.shape[2];
+        contract.maskWidth = masks.shape[3];
+    }
     Require(
         contract.classIndexSpace == "coco_sparse_category_id" &&
         contract.classLogitSlots == 91 && contract.classNames.size() == 80U,

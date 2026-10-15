@@ -6,6 +6,7 @@
 #include "rfdetr_inference/preprocessing.h"
 #include "rfdetr_inference/timing.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <filesystem>
@@ -123,7 +124,7 @@ void TestEmptyAndInvalidOutputs() {
 void TestComparisonRules() {
     const questlab::rfdetr::ModelContract contract = LoadContract();
     const questlab::rfdetr::Detection expected{
-        1, "person", 0.9F, {10.0F, 20.0F, 50.0F, 80.0F}};
+        1, "person", 0.9F, {10.0F, 20.0F, 50.0F, 80.0F}, false, 0, 0, {}};
     questlab::rfdetr::Detection actual = expected;
     actual.confidence += contract.maximumAbsoluteConfidenceDelta * 0.5F;
     actual.boxXyxy[0] += 0.001F;
@@ -179,6 +180,123 @@ void TestTimingDistribution() {
     assert(std::fabs(summary.maximumMilliseconds - 5.0) < 1.0e-9);
 }
 
+questlab::rfdetr::ModelContract LoadSegSmallContract() {
+    std::ifstream manifestInput(QUESTLAB_RFDETR_MANIFEST_PATH);
+    std::ostringstream contents;
+    contents << manifestInput.rdbuf();
+    std::string text = contents.str();
+    const std::string variantFrom = "\"variant\": \"nano\"";
+    const size_t variantAt = text.find(variantFrom);
+    assert(variantAt != std::string::npos);
+    text.replace(variantAt, variantFrom.size(), "\"variant\": \"seg-small\"");
+    const std::string labelsEnd =
+        "\"meaning\": \"per_query_class_logits\"\n    }\n  ],";
+    const size_t labelsAt = text.find(labelsEnd);
+    assert(labelsAt != std::string::npos);
+    text.replace(
+        labelsAt,
+        labelsEnd.size(),
+        "\"meaning\": \"per_query_class_logits\"\n    },\n"
+        "    {\n"
+        "      \"name\": \"masks\",\n"
+        "      \"element_type\": \"float32\",\n"
+        "      \"shape\": [\n"
+        "        1,\n"
+        "        300,\n"
+        "        96,\n"
+        "        96\n"
+        "      ],\n"
+        "      \"meaning\": \"per_query_instance_masks\"\n"
+        "    }\n  ],");
+    const std::filesystem::path directory =
+        std::filesystem::temp_directory_path() / "questlab-rfdetr-seg-tests";
+    std::filesystem::create_directories(directory);
+    const std::filesystem::path manifestPath = directory / "seg-small.json";
+    {
+        std::ofstream output(manifestPath);
+        output << text;
+    }
+    questlab::rfdetr::ModelContract contract;
+    std::string error;
+    assert(questlab::rfdetr::LoadModelContract(
+        manifestPath, &contract, &error));
+    return contract;
+}
+
+void TestSegSmallContractCarriesMaskGrid() {
+    const questlab::rfdetr::ModelContract box = LoadContract();
+    assert(!box.hasMasks);
+    const questlab::rfdetr::ModelContract seg = LoadSegSmallContract();
+    assert(seg.variant == "seg-small");
+    assert(seg.hasMasks);
+    assert(seg.maskOutputName == "masks");
+    assert(seg.maskHeight == 96);
+    assert(seg.maskWidth == 96);
+    assert(seg.input.shape == std::vector<int64_t>({1, 3, 384, 384}));
+}
+
+void TestSegMasksAttachToKeptQuery() {
+    const questlab::rfdetr::ModelContract contract = LoadSegSmallContract();
+    std::vector<float> boxes(300U * 4U, 0.0F);
+    std::vector<float> logits(300U * 91U, -100.0F);
+    boxes[0] = 0.5F;
+    boxes[1] = 0.5F;
+    boxes[2] = 0.25F;
+    boxes[3] = 0.5F;
+    logits[90] = 10.0F;
+    std::vector<float> masks(300U * 96U * 96U, -5.0F);
+    std::fill(masks.begin(), masks.begin() + 96U * 96U, 5.0F);
+    std::vector<questlab::rfdetr::Detection> detections;
+    std::string error;
+    assert(questlab::rfdetr::PostprocessDetectionsWithMasks(
+        boxes, logits, masks, 640, 480, 0.0F, contract, &detections,
+        &error));
+    assert(detections.size() == 1U);
+    assert(detections[0].hasMask);
+    assert(detections[0].maskWidth == 640);
+    assert(detections[0].maskHeight == 480);
+    assert(detections[0].mask.size() == 640U * 480U);
+    assert(std::all_of(
+        detections[0].mask.begin(), detections[0].mask.end(),
+        [](uint8_t value) { return value == 1U; }));
+    // Box-only entry point must refuse a seg contract instead of
+    // silently dropping masks.
+    assert(!questlab::rfdetr::PostprocessDetections(
+        boxes, logits, 640, 480, contract, &detections, &error));
+    assert(error.find("WithMasks") != std::string::npos);
+    // Wrong mask payload size fails closed.
+    masks.pop_back();
+    assert(!questlab::rfdetr::PostprocessDetectionsWithMasks(
+        boxes, logits, masks, 640, 480, 0.0F, contract, &detections,
+        &error));
+}
+
+void TestMaskRleRoundTrip() {
+    const std::vector<uint8_t> mask = {
+        0, 0, 1, 1, 1,
+        1, 1, 1, 0, 0,
+        0, 1, 0, 1, 0,
+    };
+    const std::vector<uint32_t> runs =
+        questlab::rfdetr::EncodeMaskRle(mask, 5, 3);
+    assert(!runs.empty());
+    std::vector<uint8_t> decoded;
+    std::string error;
+    assert(questlab::rfdetr::DecodeMaskRle(runs, 5, 3, &decoded, &error));
+    assert(decoded == mask);
+    // All-zero rows are single runs.
+    const std::vector<uint8_t> flat(8, 0U);
+    const std::vector<uint32_t> flatRuns =
+        questlab::rfdetr::EncodeMaskRle(flat, 8, 1);
+    assert(flatRuns == std::vector<uint32_t>({8U, 0U}));
+    // Truncated and over-wide payloads fail closed.
+    std::vector<uint32_t> truncated = runs;
+    truncated.pop_back();
+    assert(!questlab::rfdetr::DecodeMaskRle(
+        truncated, 5, 3, &decoded, &error));
+    assert(!questlab::rfdetr::DecodeMaskRle(
+        {6U, 1U}, 5, 1, &decoded, &error));
+}
 }  // namespace
 
 int main() {
@@ -190,5 +308,8 @@ int main() {
     TestComparisonRules();
     TestCorruptModelAndManifestMismatch();
     TestTimingDistribution();
+    TestSegSmallContractCarriesMaskGrid();
+    TestSegMasksAttachToKeptQuery();
+    TestMaskRleRoundTrip();
     return 0;
 }
