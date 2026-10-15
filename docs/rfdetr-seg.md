@@ -39,12 +39,22 @@ the measurement. Score is quad share of mask foreground
 Host-verified on a synthetic tilted screen: corners < 3 px,
 sub-pixel reprojection, empty-mask refusal.
 
+## Headset rendering (landed)
+
+App 10 draws the served corner pose for any class: `ScreenRectangle`
+face outline (W×H in the object XY plane) + `Axes` tripod at the
+`LOCAL` pose, converted on the worker with the detection_projection
+camera→LOCAL convention. Stale scenes draw nothing extra; the
+depth-fused box path is untouched.
+
 ## Remaining slices
 
-1. Pin the seg-small checkpoint and extend `export_model.py`
-   (`RFDETRSegSmall`, 384) plus `inspect_onnx` for three outputs.
-2. Service: `RunWithMasks` + RLE mask payload on the streaming
-   protocol (box-only clients fail closed, as today).
-3. Client + app 10: consume masks; fit the monitor quad from the
-   `tv` mask instead of Canny edges (`tools/monitor_corners`).
+1. ~~Pin the seg-small checkpoint and extend `export_model.py`~~ done:
+   `rfdetr-seg-small` (100 queries, masks 96×96, SHA pinned in
+   `tools/rfdetr_export/seg-small-manifest.json`).
+2. ~~Service RLE wire~~ superseded: service serves QLD2 quads + poses
+   from seg masks; per-class planar sizes via `--class-sizes`
+   (pose only for listed classes, quad for all).
+3. Deploy validation on headset (`--backend streaming` + seg service
+   + `--allowed-classes`), thermal + accuracy acceptance.
 4. On-device seg only after host validation and latency budget.

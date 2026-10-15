@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <filesystem>
@@ -712,6 +713,23 @@ protected:
                                     "Streaming pose payload is truncated";
                             }
                             return false;
+                        }
+                        float sizeWidth = 0.0F;
+                        float sizeHeight = 0.0F;
+                        if (!ReceiveFloat(connected, &sizeWidth) ||
+                            !ReceiveFloat(connected, &sizeHeight)) {
+                            if (error != nullptr) {
+                                *error =
+                                    "Streaming pose payload is truncated";
+                            }
+                            return false;
+                        }
+                        if (!std::isfinite(sizeWidth) ||
+                            !std::isfinite(sizeHeight) ||
+                            sizeWidth <= 0.0F || sizeHeight <= 0.0F) {
+                            detection.hasCornerPose = false;
+                        } else {
+                            detection.cornerSizeWH = {sizeWidth, sizeHeight};
                         }
                     }
                 }
