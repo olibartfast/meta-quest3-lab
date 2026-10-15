@@ -9,7 +9,6 @@ source "$script_dir/toolchain_config.sh"
 
 app=""
 manifest_path="$repo_root/tools/rfdetr_export/model-manifest.json"
-manifest_explicit=false
 triton_host="127.0.0.1"
 allowed_classes=""
 triton_model=""
@@ -38,7 +37,6 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             manifest_path="$2"
-            manifest_explicit=true
             shift 2
             ;;
         --allowed-classes)
