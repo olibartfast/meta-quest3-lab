@@ -56,7 +56,9 @@ Reason strings (exact, asserted by tests):
 - `"insufficient correspondences"` — count < 6.
 - `"degenerate sample geometry"` — collinear/duplicate sampled minimal set.
 - `"no consensus"` — no inlier set ≥ options.minInliers.
-- `"refinement failed"` — Gauss-Newton diverged or produced non-finite pose.
+- `"refinement failed"` — the initial consensus pose is unusable (a point
+  behind the camera). A non-improving or singular Gauss-Newton step stops the
+  iteration at the best-so-far pose; that is convergence, not an error.
 
 Input-validation order (deterministic, exact semantics):
 
@@ -68,7 +70,9 @@ Input-validation order (deterministic, exact semantics):
 4. `"degenerate sample geometry"` — global pre-check: fewer than 3 unique object
    points or all object points collinear within a scale-relative tolerance.
 5. RANSAC: no consensus ≥ `options.minInliers` → `"no consensus"`.
-6. Gauss-Newton non-finite/divergent → `"refinement failed"`.
+6. Gauss-Newton stops at the best-so-far pose when a step is singular or
+   non-improving; `"refinement failed"` is reserved for an unusable initial
+   consensus pose (a point behind the camera).
 
 The null output pointer is rejected before the output is cleared so every false
 path (when the output is non-null) leaves a cleared, finite `Result`. No NaN/Inf
@@ -93,17 +97,27 @@ the quaternion ordering matches `libs/screen_corners`.
    and adaptive iteration count. Each hypothesis draws 6 correspondences and
    rejects a degenerate sample (collinear object points, duplicate points, or
    near-collinear pixels) before solving.
-4. Minimal solver: 6-point DLT. Build the 12×12 normal matrix, take the
-   smallest eigenvector via a self-contained symmetric Jacobi eigensolver, and
-   reshape it into the 3×4 projection P. DLT resolves P only up to sign and
-   scale, so (a) negate the whole 12-vector so the sampled points' camera
-   depths are positive (cheirality, whole-vector flip — never rotation and
-   translation separately), (b) after denormalization scale P so its 3×3
-   rotation block's Frobenius norm is sqrt(3) (a valid rotation has that
-   norm), then (c) orthonormalize the 3×3 block (polar iteration, no SVD),
-   forcing det = +1, and use the last column as translation. DLT handles both
-   coplanar and non-coplanar sets through one path — the planar ambiguity is a
-   P3P concern, not DLT.
+4. Minimal solver: 6-point Hartley-normalized DLT, with two sample-geometry
+   paths (deviation D-1, recorded in `validation.md`):
+   - Non-coplanar cloud: build the 12×12 normal matrix, take the smallest
+     eigenvector via the self-contained symmetric Jacobi eigensolver, and
+     reshape it into the 3×4 projection P. DLT resolves P only up to sign and
+     scale, so (a) negate the whole 12-vector so the sampled points' camera
+     depths are positive (cheirality, whole-vector flip — never rotation and
+     translation separately), (b) after denormalization scale P so its 3×3
+     rotation block's Frobenius norm is sqrt(3) (a valid rotation has that
+     norm), then (c) orthonormalize the 3×3 block (polar iteration, no SVD),
+     forcing det = +1, and use the last column as translation.
+   - Coplanar cloud: the 12-parameter DLT is degenerate for planar samples
+     (the second projection column is unconstrained, so the smallest
+     eigenvector is arbitrary). Project the object points once onto a PCA
+     plane basis (centroid plus right-handed u/v/n) and solve the 9×9 plane
+     homography DLT instead; decompose H = λ[R·u, R·v, R·centroid + t] with
+     the same cheirality/scale/orthonormalization discipline, compose the
+     in-plane rotation back through the basis, and translate by the centroid.
+   Both paths share the RANSAC, scoring, and Gauss-Newton stages; the normal
+   matrix for any n×n Jacobi block must be a contiguous n×n array because
+   `JacobiEigen` indexes it with row stride n.
 5. Score each hypothesis against all points (reprojection < threshold px);
    keep the best inlier set.
 6. Gauss-Newton refinement on inliers (analytic Jacobian preferred, numeric

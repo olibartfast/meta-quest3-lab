@@ -215,15 +215,19 @@ void AssertExactRecovery(
     assert(SolvePose(
         correspondences.data(), static_cast<int>(correspondences.size()),
         intrinsics, Options{}, &result, &error));
-    assert(
-        PositionErrorMeters(result.pose.position, groundTruth.position) <=
-        2.0e-3);
-    assert(
-        RotationErrorRadians(
-            result.pose.orientation, groundTruth.orientation) <=
-        DegreesToRadians(0.1));
-    assert(result.rmsReprojectionPixels <= 1.0e-3F);
+    const double positionError =
+        PositionErrorMeters(result.pose.position, groundTruth.position);
+    const double rotationError =
+        RotationErrorRadians(result.pose.orientation, groundTruth.orientation);
+    assert(positionError <= 2.0e-4);
+    assert(rotationError <= DegreesToRadians(0.05));
+    assert(result.rmsReprojectionPixels <= 2.0e-4F);
     assert(result.inlierCount == static_cast<int>(points.size()));
+    std::printf(
+        "  exact n=%d position_error=%.3e m rotation_error=%.4f deg rms=%.3e px\n",
+        static_cast<int>(points.size()), positionError,
+        rotationError * 180.0 / kPi,
+        static_cast<double>(result.rmsReprojectionPixels));
 }
 
 void TestExactRecoveryNonCoplanar() {
@@ -265,13 +269,16 @@ void TestNoise() {
     std::string error;
     assert(SolvePose(
         correspondences.data(), n, k, Options{}, &result, &error));
-    assert(
-        PositionErrorMeters(result.pose.position, groundTruth.position) <=
-        15.0e-3);
-    assert(
-        RotationErrorRadians(
-            result.pose.orientation, groundTruth.orientation) <=
-        DegreesToRadians(1.0));
+    const double positionError =
+        PositionErrorMeters(result.pose.position, groundTruth.position);
+    const double rotationError =
+        RotationErrorRadians(result.pose.orientation, groundTruth.orientation);
+    assert(positionError <= 8.0e-3);
+    assert(rotationError <= DegreesToRadians(0.5));
+    std::printf(
+        "  noise sigma=0.5px n=%d position_error=%.3e m rotation_error=%.4f deg rms=%.4f px\n",
+        n, positionError, rotationError * 180.0 / kPi,
+        static_cast<double>(result.rmsReprojectionPixels));
 }
 
 // --- Outliers (V-4) ---------------------------------------------------------
@@ -310,13 +317,12 @@ void TestOutliers() {
     std::string error;
     assert(SolvePose(
         correspondences.data(), total, k, options, &result, &error));
-    assert(
-        PositionErrorMeters(result.pose.position, groundTruth.position) <=
-        15.0e-3);
-    assert(
-        RotationErrorRadians(
-            result.pose.orientation, groundTruth.orientation) <=
-        DegreesToRadians(1.0));
+    const double positionError =
+        PositionErrorMeters(result.pose.position, groundTruth.position);
+    const double rotationError =
+        RotationErrorRadians(result.pose.orientation, groundTruth.orientation);
+    assert(positionError <= 8.0e-3);
+    assert(rotationError <= DegreesToRadians(0.5));
 
     assert(result.inlierMask.size() == static_cast<size_t>(total));
     int agreement = 0;
@@ -328,6 +334,9 @@ void TestOutliers() {
         }
     }
     assert(agreement >= 19);  // >= 95% of 40
+    std::printf(
+        "  outliers 50%% n=%d mask_agreement=%d/%d position_error=%.3e m rotation_error=%.4f deg\n",
+        total, agreement, total, positionError, rotationError * 180.0 / kPi);
 }
 
 // --- Metric scale (V-5) -----------------------------------------------------
@@ -376,10 +385,12 @@ void TestMetricScale() {
     const double relative = std::sqrt(dx * dx + dy * dy + dz * dz) / norm;
     assert(relative <= 1.0e-3);
 
-    assert(
-        RotationErrorRadians(
-            scaledResult.pose.orientation, reference.pose.orientation) <=
-        DegreesToRadians(0.1));
+    const double rotationError = RotationErrorRadians(
+        scaledResult.pose.orientation, reference.pose.orientation);
+    assert(rotationError <= DegreesToRadians(0.1));
+    std::printf(
+        "  metric scale k=2.5 relative_position_error=%.3e rotation_error=%.4f deg\n",
+        relative, rotationError * 180.0 / kPi);
 }
 
 // --- Determinism (V-5) ------------------------------------------------------
@@ -436,6 +447,7 @@ void TestDeterminism() {
             sizeof(float)) == 0);
     assert(first.inlierMask == second.inlierMask);
     assert(firstError == secondError);
+    std::printf("  determinism: two runs bit-identical (pose, count, rms, mask)\n");
 }
 
 // --- Degenerate / refusal (V-6) ---------------------------------------------
