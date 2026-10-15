@@ -1,0 +1,189 @@
+# Plan: pose_solver
+
+Run from repo root. TDD-shaped per decision 2: tests + contract header + stub
+first, observe red, implement group by group to green, record red→green.
+
+## Interface sketch (exact contract)
+
+Header: `libs/pose_solver/include/pose_solver/pose_solver.h`
+Namespace: `questlab::pose`
+
+```cpp
+namespace questlab::pose {
+
+struct Intrinsics {
+    float fx = 0.0F;   // focal length, pixels
+    float fy = 0.0F;
+    float cx = 0.0F;   // principal point, pixels
+    float cy = 0.0F;
+};
+
+struct Correspondence {
+    math::Vec3 objectPoint{};  // metres, object frame
+    math::Vec2 pixel{};        // pixels, Camera2 basis
+};
+
+struct Options {
+    float reprojectionThresholdPx = 3.0F;   // RANSAC inlier threshold
+    int maxIterations = 1000;               // cap (adaptive early-exit applies)
+    uint32_t seed = 0x9E3779B9U;            // fixed default
+    int minInliers = 6;                     // minimum consensus
+    bool outputInlierMask = false;          // opt-in to N-byte mask
+};
+
+struct Result {
+    math::Pose pose{};                    // camera-from-object
+    int inlierCount = 0;
+    std::vector<uint8_t> inlierMask{};    // empty unless outputInlierMask
+    float rmsReprojectionPixels = 0.0F;   // RMS over inliers
+};
+
+bool SolvePose(
+    const Correspondence* correspondences,
+    int count,
+    const Intrinsics& intrinsics,
+    const Options& options,
+    Result* result,
+    std::string* error);
+
+}  // namespace questlab::pose
+```
+
+Reason strings (exact, asserted by tests):
+
+- `"invalid pose input"` — null output, bad options, non-positive/non-finite fx/fy.
+- `"non-finite correspondence"` — any object point or pixel non-finite.
+- `"insufficient correspondences"` — count < 6.
+- `"degenerate sample geometry"` — collinear/duplicate sampled minimal set.
+- `"no consensus"` — no inlier set ≥ options.minInliers.
+- `"refinement failed"` — Gauss-Newton diverged or produced non-finite pose.
+
+Input-validation order (deterministic, exact semantics):
+
+1. `count < 6` → `"insufficient correspondences"`.
+2. any non-finite object point or pixel → `"non-finite correspondence"`.
+3. `"invalid pose input"` — null result pointer, null correspondences pointer
+   (with `count >= 6`), non-finite/non-positive fx or fy, non-finite cx or cy,
+   non-positive reprojectionThresholdPx, `maxIterations < 1`, `minInliers < 3`.
+4. `"degenerate sample geometry"` — global pre-check: fewer than 3 unique object
+   points or all object points collinear within a scale-relative tolerance.
+5. RANSAC: no consensus ≥ `options.minInliers` → `"no consensus"`.
+6. Gauss-Newton non-finite/divergent → `"refinement failed"`.
+
+The null output pointer is rejected before the output is cleared so every false
+path (when the output is non-null) leaves a cleared, finite `Result`. No NaN/Inf
+may remain in any output field on any path, false included. RANSAC also skips
+degenerate minimal samples (duplicate or collinear within the sample) internally.
+
+Type choice: depend on `libs/xr_math` for `Vec2/Vec3/Quat/Pose` (the repo's
+geometry vocabulary; portable, host-tested), wired via the
+`libs/detection_projection` pattern (`if(NOT TARGET xr_math) add_subdirectory`
+then `target_link_libraries(... PUBLIC xr_math)`). Keep a local minimal
+`Intrinsics` (fx/fy/cx/cy, mirroring `libs/screen_corners`) rather than pulling
+in `camera_source`'s heavier `CameraIntrinsics`. Result pose is `math::Pose`
+(Quat x,y,z,w + Vec3 position) so downstream app-10 wiring composes directly;
+the quaternion ordering matches `libs/screen_corners`.
+
+## Proposed implementation approach (steer, adjustable)
+
+1. Pre-check inputs; keep an index array for RANSAC sampling.
+2. Normalize object points and pixels (Hartley: centroid to origin, mean
+   distance to a unit scale); fold `K^-1` into the pixels.
+3. RANSAC with a deterministic splitmix64 PRNG (seeded from `options.seed`)
+   and adaptive iteration count. Each hypothesis draws 6 correspondences and
+   rejects a degenerate sample (collinear object points, duplicate points, or
+   near-collinear pixels) before solving.
+4. Minimal solver: 6-point DLT. Build the 12×12 normal matrix, take the
+   smallest eigenvector via a self-contained symmetric Jacobi eigensolver, and
+   reshape it into the 3×4 projection P. DLT resolves P only up to sign and
+   scale, so (a) negate the whole 12-vector so the sampled points' camera
+   depths are positive (cheirality, whole-vector flip — never rotation and
+   translation separately), (b) after denormalization scale P so its 3×3
+   rotation block's Frobenius norm is sqrt(3) (a valid rotation has that
+   norm), then (c) orthonormalize the 3×3 block (polar iteration, no SVD),
+   forcing det = +1, and use the last column as translation. DLT handles both
+   coplanar and non-coplanar sets through one path — the planar ambiguity is a
+   P3P concern, not DLT.
+5. Score each hypothesis against all points (reprojection < threshold px);
+   keep the best inlier set.
+6. Gauss-Newton refinement on inliers (analytic Jacobian preferred, numeric
+   acceptable), then final refit on all inliers; recompute inlier mask, count,
+   and RMS reprojection.
+7. Fail-closed on every path; no NaN/Inf may reach a Result.
+
+EPnP / P3P are future optimizations (out of scope): the Jacobi DLT is simpler,
+dependency-free, and sufficient for the R-2/R-3 budgets.
+
+## Phase P-1 — Red: contract + tests + stub
+
+- T-1 Write `libs/pose_solver/include/pose_solver/pose_solver.h` (contract
+  above) and `libs/pose_solver/CMakeLists.txt` (mirror `detection_projection`:
+  standalone project + CTest + xr_math wiring).
+- T-2 Write `libs/pose_solver/tests/pose_solver_tests.cpp` with one test group
+  per requirement: exact recovery (coplanar + non-coplanar, N in {6, 40, 200}),
+  noise, outliers, scale/determinism, degeneracy, performance.
+- T-3 Write `libs/pose_solver/src/pose_solver.cpp` as a stub returning false.
+- Deliverable: builds clean; `ctest` runs and each group fails (assert aborts).
+- Acceptance: record the red run (command + failing group list) in
+  `validation.md` evidence.
+
+## Phase P-2 — Green: implement group by group
+
+Each group implements only that slice, runs its test to green, records evidence.
+
+- G-1 Exact recovery (R-2). DLT + Jacobi eigensolver + orthonormalization +
+  denormalization; coplanar and non-coplanar pass at R-2 tolerances.
+- G-2 Noise (R-3). GN refinement lands noisy data within R-3 bounds.
+- G-3 Outliers (R-4). RANSAC loop + adaptive iterations + deterministic PRNG;
+  mask agreement ≥ 95% at 50% outliers.
+- G-4 Scale + determinism (R-5). Assert the scale property and bit-identical
+  repeats.
+- G-5 Degeneracy (R-6). Input/pre-check/consensus failures return exact reason
+  strings; no NaN.
+- G-6 Performance (R-7). Record wall time under defaults; assert the budget.
+- Deliverable: all `pose_solver_tests` green.
+- Acceptance: red→green recorded per group.
+
+## Phase P-3 — Hardening
+
+- T-1 Address reviewer findings; keep the packet in sync if the contract or
+  approach deviated (update requirements/plan/validation in the same branch).
+- T-2 Add the CI step to `.github/workflows/android-ci.yml`, after
+  "Test detection projection geometry":
+
+  ```yaml
+  - name: Test pose solver geometry
+    run: |
+      cmake -S libs/pose_solver -B build/pose-solver-tests -DBUILD_TESTING=ON
+      cmake --build build/pose-solver-tests --parallel
+      ctest --test-dir build/pose-solver-tests --output-on-failure
+  ```
+
+- T-3 Fill `validation.md` evidence (dates, commands, results); confirm
+  warning-clean build and PIC.
+
+## Integration checkpoint
+
+- CI step above added and green on this branch.
+- Proposed roadmap item (orchestrator syncs into `specs/roadmap.md`):
+
+  ```text
+  ## Phase N — Matcher-driven 6-DoF object pose
+  - Status: planned
+  - Outcome: app-10 renders a metric 6-DoF box for a non-coplanar object from
+    matcher 2D↔2D correspondences lifted to 2D↔3D.
+  - Proves: matcher + template/SfM 3D reference + libs/pose_solver PnP compose
+    into measured 6-DoF (draw only what is measured).
+  - Depends on: libs/pose_solver (this packet), template scanning/SfM, matcher
+    runtime.
+  - Spec: specs/2026-10-16-pose-from-correspondences/  Branch: spec/pose-from-correspondences
+  ```
+
+- The orchestrator edits `specs/roadmap.md`; this packet does not touch it.
+
+## Notes
+
+- Mirrors: `libs/screen_corners` (fail-closed + reason strings, self-contained
+  pose), `libs/detection_projection` / `libs/detection_fusion` (xr_math wiring).
+- The solver is a device-capable geometry lib; Triton-side inference and
+  on-device postprocessing stay separate — no inference code lives here.
