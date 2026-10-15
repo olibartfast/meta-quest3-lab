@@ -20,7 +20,9 @@
 #include <iostream>
 #include <limits>
 #include <numeric>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -35,11 +37,14 @@ struct Options {
     std::string tritonUrl;
     std::string tritonModel = "rfdetr_nano";
     std::string tritonVersion = "1";
-    // Object size for SolveQuadPose on seg-mask quads (QLD2 corners).
-    // Class-agnostic: every masked detection gets a quad; the pose is
-    // solved with this size for all of them.
-    float objectWidthMeters = 0.55F;
-    float objectHeightMeters = 0.32F;
+    // Per-class planar sizes (label:W,H;...) for SolveQuadPose on seg-mask
+    // quads. Class-agnostic by construction: every masked detection gets a
+    // quad, but a pose is served only for listed classes — an unlisted
+    // class has no known geometry, and a pose from a guessed size would be
+    // a wrong measurement, not a missing one.
+    std::unordered_map<std::string, std::array<float, 2>> classSizes = {
+        {"tv", {0.55F, 0.32F}},
+    };
 };
 
 int64_t SteadyNanoseconds() {
@@ -54,8 +59,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
              argument == "--port" || argument == "--triton-url" ||
              argument == "--triton-model" ||
              argument == "--triton-version" ||
-             argument == "--monitor-size" ||
-             argument == "--object-size") &&
+             argument == "--object-size" ||
+             argument == "--class-sizes") &&
             index + 1 >= argc) {
             return false;
         }
@@ -81,20 +86,31 @@ bool ParseOptions(int argc, char** argv, Options* options) {
             }
         } else if (
             argument == "--monitor-size" || argument == "--object-size") {
+            std::cerr << "--monitor-size/--object-size is removed: use "
+                         "--class-sizes label:W,H[;...]\n";
+            return false;
+        } else if (argument == "--class-sizes") {
             try {
-                const std::string value = argv[++index];
-                const size_t comma = value.find(',');
-                if (comma == std::string::npos) {
-                    return false;
+                std::unordered_map<std::string, std::array<float, 2>> sizes;
+                std::string entry;
+                std::istringstream stream(argv[++index]);
+                while (std::getline(stream, entry, ';')) {
+                    const size_t colon = entry.find(':');
+                    const size_t comma = entry.find(',', colon + 1U);
+                    if (colon == std::string::npos ||
+                        comma == std::string::npos) {
+                        return false;
+                    }
+                    const float width = std::stof(
+                        entry.substr(colon + 1U, comma - colon - 1U));
+                    const float height =
+                        std::stof(entry.substr(comma + 1U));
+                    if (width <= 0.0F || height <= 0.0F) {
+                        return false;
+                    }
+                    sizes[entry.substr(0, colon)] = {width, height};
                 }
-                options->objectWidthMeters =
-                    std::stof(value.substr(0, comma));
-                options->objectHeightMeters =
-                    std::stof(value.substr(comma + 1U));
-                if (options->objectWidthMeters <= 0.0F ||
-                    options->objectHeightMeters <= 0.0F) {
-                    return false;
-                }
+                options->classSizes = std::move(sizes);
             } catch (const std::exception&) {
                 return false;
             }
@@ -372,10 +388,16 @@ bool ServeClient(
                     served.quadXy[corner * 2U + 1U] =
                         quad.corners[corner].y;
                 }
+                // Pose only for classes with known planar geometry.
+                const auto known =
+                    options.classSizes.find(detection.className);
+                if (known == options.classSizes.end()) {
+                    continue;
+                }
                 questlab::corners::Pose pose{};
                 if (!questlab::corners::SolveQuadPose(
-                        quad, intrinsics, options.objectWidthMeters,
-                        options.objectHeightMeters, &pose, &served.reprojectionPixels,
+                        quad, intrinsics, known->second[0],
+                        known->second[1], &pose, &served.reprojectionPixels,
                         &error)) {
                     continue;
                 }
@@ -459,7 +481,7 @@ int main(int argc, char** argv) {
         std::cerr << "Usage: rfdetr_service --manifest PATH "
                      "[--model PATH | --triton-url URL] [--triton-model NAME] "
                      "[--triton-version VER] [--port 48110] "
-                     "[--object-size W,H]\n";
+                     "[--class-sizes label:W,H[;...]]\n";
         return 2;
     }
     questlab::rfdetr::ModelContract contract;
