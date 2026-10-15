@@ -1,8 +1,8 @@
 # Requirements: pose_solver — metric 6-DoF pose from 2D↔3D correspondences
 
 Spec: `specs/2026-10-16-pose-from-correspondences/requirements.md`
-Branch: `spec/pose-from-correspondences` · Roadmap: new matcher phase (proposed,
-not yet in `roadmap.md` — orchestrator syncs at integration)
+Branch: `spec/pose-from-correspondences` · Roadmap: `specs/roadmap.md` Phase 9a
+(added at integration; this packet records the change)
 
 ## Objective
 
@@ -47,10 +47,11 @@ later matcher phase; proposed item text in `plan.md`).
   (fx, fy, cx, cy); outputs = pose, inlier count, optional inlier mask, RMS
   reprojection in pixels; fail-closed reason strings on every false.
 - R-2 Exact recovery. Noiseless synthetic data, non-coplanar and coplanar
-  point sets, N from 6 to ~200, position error ≤ 2 mm at ~1 m scale, rotation
-  error ≤ 0.1° (first-measurement targets).
+  point sets, N from 6 to ~200, position error ≤ 0.2 mm at ~1 m scale, rotation
+  error ≤ 0.05°, RMS ≤ 2e-4 px (tightened from the first-measurement targets,
+  see `validation.md`).
 - R-3 Pixel-noise robustness. Gaussian σ = 0.5 px on ~N=40 correspondences at
-  ~1 m, position error ≤ 15 mm, rotation error ≤ 1°.
+  ~1 m, position error ≤ 8 mm, rotation error ≤ 0.5°.
 - R-4 Outlier robustness. ≥ 50% outliers: correct pose within the R-3 noise
   bounds, and the returned inlier mask agrees with ground-truth inliers ≥ 95%.
 - R-5 Metric scale + determinism. Scaling all object points by k scales the
@@ -89,8 +90,11 @@ later matcher phase; proposed item text in `plan.md`).
 
 ## Open questions
 
-- O-1 Numeric tolerances in R-2/R-3/R-4 are first-measurement targets; tighten
-  after the first recorded run. Owner: implementer.
+- O-1 (resolved 2026-10-16) First measurements: exact recovery ≤ 3.6e-7 m /
+  0.006°, RMS ≤ 4.5e-5 px; noise σ = 0.5 px ≤ 2.5e-3 m / 0.089°; 50% outliers
+  mask 40/40 with 2.8e-3 m / 0.17°; performance 81 ms. Tolerances tightened to
+  2e-4 m / 0.05° / 2e-4 px (exact) and 8e-3 m / 0.5° (noise, outliers); the
+  500 ms performance budget is kept for CI headroom.
 - O-2 Inlier mask allocation on the device path: `Result::inlierMask` is a
   heap vector for now; switch to a caller-supplied buffer only if device
   profiling demands. Owner: implementer.

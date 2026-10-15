@@ -164,6 +164,17 @@ jobs:
             --test-dir build/detection-projection-tests \
             --output-on-failure
 
+      - name: Test pose solver geometry
+        run: |
+          cmake \
+            -S libs/pose_solver \
+            -B build/pose-solver-tests \
+            -DBUILD_TESTING=ON
+          cmake --build build/pose-solver-tests --parallel
+          ctest \
+            --test-dir build/pose-solver-tests \
+            --output-on-failure
+
       - name: Test object-detector boundary and replay
         run: |
           cmake \

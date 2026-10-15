@@ -3,7 +3,8 @@
 Phases 1–8 below cover work that is not yet done. Milestones 0–10 and 16 are implemented
 on disk; what remains of them is headset acceptance, which is Phase 1. The full milestone
 history and rationale live in `ROADMAP.md`, and the per-milestone implementation plans live
-in `specs/milestone-plans/`; this file is the executable backlog.
+in `specs/milestone-plans/`; this file is the executable backlog. Phase 9 is the
+matcher-driven 6-DoF track; its solver slice (9a) has landed.
 
 ## Phase 1 — Close the Device Acceptance Backlog
 
@@ -152,3 +153,22 @@ Milestone 15. Device baselines are blocked on Phases 1–5.
 - Add screenshots or short recordings for each completed application
 - Keep `docs/architecture.md` current: add depth, perception-protocol, sensor-rig, and
   fusion ownership as those phases land
+
+## Phase 9 — Matcher-driven 6-DoF object pose
+
+A 2D↔2D matcher (LightGlue/SuperGlue-class) cannot produce 6-DoF by itself: the
+correspondences need a metric 3D side. This phase composes a template/SfM
+object model, a matcher model served from Triton (host inference, as everywhere
+in app 10), and `libs/pose_solver` into a measured metric 6-DoF render for a
+textured non-coplanar object.
+
+- Phase 9a — correspondence pose solver: **done** (2026-10-16,
+  `specs/2026-10-16-pose-from-correspondences/`, `libs/pose_solver`): metric
+  6-DoF from 2D↔3D correspondences, RANSAC to 50% outliers, deterministic,
+  fail-closed, host CTest plus CI step "Test pose solver geometry".
+- Phase 9b — matcher probe: a keypoint/matcher model on the host against a
+  scanned or rendered template of one textured object, producing 2D↔3D
+  correspondences into `libs/pose_solver`; measure pose error at 1/2/3 m.
+- Phase 9c — app-10 integration: template plus matcher behind the detector
+  pipeline, metric 6-DoF rendering for the non-coplanar object; headset
+  acceptance.

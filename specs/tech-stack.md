@@ -18,6 +18,7 @@
 | Model | RF-DETR Nano (ONNX) | rfdetr 1.9.0, opset 17 | `1x3x384x384` NCHW, sigmoid scores, no NMS; identity verified at load |
 | Model export | Python + uv | 3.11, torch 2.10.0+cpu | `tools/rfdetr_export`, pinned via `uv.lock` and `model-manifest.json` |
 | Host reference oracle | `tools/rfdetr_inference` | — | C++ reference the on-device path is measured against |
+| Pose solver | `libs/pose_solver` | — | Metric 6-DoF from 2D↔3D correspondences (RANSAC + DLT + Gauss-Newton), host-tested |
 | Telemetry | `libs/perf_telemetry` + Android ATrace | — | Allocation-free sampling; Perfetto spans behind `QUEST_ENABLE_PERFETTO_TRACING` |
 | Integrity | `libs/artifact_integrity` | — | Checksums for provisioned models and recorded fixtures |
 | Testing | Host CTest binaries with `assert` | — | No external test framework; device acceptance is manual and documented |
