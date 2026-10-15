@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -189,6 +190,14 @@ questlab::rfdetr::ModelContract LoadSegSmallContract() {
     const size_t variantAt = text.find(variantFrom);
     assert(variantAt != std::string::npos);
     text.replace(variantAt, variantFrom.size(), "\"variant\": \"seg-small\"");
+    for (const auto& shape :
+         {std::pair<const char*, const char*>{"300,\n        4", "100,\n        4"},
+          std::pair<const char*, const char*>{
+              "300,\n        91", "100,\n        91"}}) {
+        const size_t at = text.find(shape.first);
+        assert(at != std::string::npos);
+        text.replace(at, std::strlen(shape.first), shape.second);
+    }
     const std::string labelsEnd =
         "\"meaning\": \"per_query_class_logits\"\n    }\n  ],";
     const size_t labelsAt = text.find(labelsEnd);
@@ -202,7 +211,7 @@ questlab::rfdetr::ModelContract LoadSegSmallContract() {
         "      \"element_type\": \"float32\",\n"
         "      \"shape\": [\n"
         "        1,\n"
-        "        300,\n"
+        "        100,\n"
         "        96,\n"
         "        96\n"
         "      ],\n"
@@ -237,14 +246,14 @@ void TestSegSmallContractCarriesMaskGrid() {
 
 void TestSegMasksAttachToKeptQuery() {
     const questlab::rfdetr::ModelContract contract = LoadSegSmallContract();
-    std::vector<float> boxes(300U * 4U, 0.0F);
-    std::vector<float> logits(300U * 91U, -100.0F);
+    std::vector<float> boxes(100U * 4U, 0.0F);
+    std::vector<float> logits(100U * 91U, -100.0F);
     boxes[0] = 0.5F;
     boxes[1] = 0.5F;
     boxes[2] = 0.25F;
     boxes[3] = 0.5F;
     logits[90] = 10.0F;
-    std::vector<float> masks(300U * 96U * 96U, -5.0F);
+    std::vector<float> masks(100U * 96U * 96U, -5.0F);
     std::fill(masks.begin(), masks.begin() + 96U * 96U, 5.0F);
     std::vector<questlab::rfdetr::Detection> detections;
     std::string error;

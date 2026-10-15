@@ -28,6 +28,7 @@ VARIANTS = {
         "model_class": "RFDETRNano",
         "shape": (384, 384),
         "input_shape": [1, 3, 384, 384],
+        "queries": 300,
         "onnx_filename": "rfdetr-nano.onnx",
         "checkpoint_url": CHECKPOINT_URL,
         "checkpoint_sha256": CHECKPOINT_SHA256,
@@ -37,6 +38,7 @@ VARIANTS = {
         "model_class": "RFDETRMedium",
         "shape": (576, 576),
         "input_shape": [1, 3, 576, 576],
+        "queries": 300,
         "onnx_filename": "rfdetr-medium.onnx",
         "checkpoint_url": (
             "https://storage.googleapis.com/rfdetr/medium_coco/"
@@ -45,11 +47,28 @@ VARIANTS = {
         "checkpoint_sha256": None,
         "checkpoint_md5": "7223f764a87b863f02eb8d52bf0ce2ee",
     },
+    "seg-small": {
+        "model_class": "RFDETRSegSmall",
+        "shape": (384, 384),
+        "input_shape": [1, 3, 384, 384],
+        "queries": 100,
+        "onnx_filename": "rfdetr-seg-small.onnx",
+        "checkpoint_filename": "rf-detr-seg-s-ft.pth",
+        "checkpoint_url": (
+            "https://storage.googleapis.com/rfdetr/rf-detr-seg-s-ft.pth"
+        ),
+        "checkpoint_sha256": (
+            "6de3da31b2572cac214a1c76cce4a92a13966d56390ac2b3a3de9a8dc2b2bca3"
+        ),
+        "checkpoint_md5": "0a2a3006381d0c42853907e700eadd08",
+    },
 }
 EXPECTED_OUTPUTS = {
     "dets": [1, 300, 4],
     "labels": [1, 300, 91],
 }
+# Seg variants add a per-query mask grid; queries and H/W come from the
+# variant record (structural check only: float32 [1, Q, H, W]).
 EXPECTED_VERSIONS = {
     "rfdetr": "1.9.0",
     "torch": "2.10.0+cpu",
@@ -118,7 +137,12 @@ def tensor_shape(value_info: Any) -> list[int]:
     return dimensions
 
 
-def inspect_onnx(path: Path, expected_input_shape: list[int]) -> dict[str, Any]:
+def inspect_onnx(
+    path: Path,
+    expected_input_shape: list[int],
+    queries: int,
+    expect_masks: bool,
+) -> dict[str, Any]:
     import onnx
 
     model = onnx.load(path)
@@ -127,7 +151,25 @@ def inspect_onnx(path: Path, expected_input_shape: list[int]) -> dict[str, Any]:
     outputs = {value.name: tensor_shape(value) for value in model.graph.output}
     if inputs != {"input": expected_input_shape}:
         raise ValueError(f"Unexpected ONNX inputs: {inputs}")
-    if outputs != EXPECTED_OUTPUTS:
+    if outputs.get("dets") != [1, queries, 4] or outputs.get("labels") != [
+        1,
+        queries,
+        91,
+    ]:
+        raise ValueError(f"Unexpected RF-DETR outputs: {outputs}")
+    if expect_masks:
+        if set(outputs) != {"dets", "labels", "masks"}:
+            raise ValueError(f"Unexpected seg ONNX outputs: {outputs}")
+        mask_shape = outputs["masks"]
+        if (
+            len(mask_shape) != 4
+            or mask_shape[0] != 1
+            or mask_shape[1] != queries
+            or mask_shape[2] <= 0
+            or mask_shape[3] <= 0
+        ):
+            raise ValueError(f"Unexpected seg mask output: {mask_shape}")
+    elif set(outputs) != {"dets", "labels"}:
         raise ValueError(f"Unexpected ONNX outputs: {outputs}")
     return {"inputs": inputs, "outputs": outputs}
 
@@ -156,19 +198,46 @@ def update_manifest(
     variant: dict[str, Any],
     onnx_sha256: str,
     checkpoint_sha256: str,
+    inspection: dict[str, Any],
 ) -> None:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["model"]["variant"] = variant_name
     source = manifest["model"]["source"]
-    source["checkpoint_filename"] = variant["onnx_filename"].replace(
-        "rfdetr-", "rf-detr-"
-    ).replace(".onnx", ".pth")
+    source["checkpoint_filename"] = variant.get(
+        "checkpoint_filename",
+        variant["onnx_filename"]
+        .replace("rfdetr-", "rf-detr-")
+        .replace(".onnx", ".pth"),
+    )
     source["checkpoint_url"] = variant["checkpoint_url"]
     source["checkpoint_md5"] = variant["checkpoint_md5"]
     source["checkpoint_sha256"] = checkpoint_sha256
     manifest["model"]["onnx"]["filename"] = variant["onnx_filename"]
     manifest["model"]["onnx"]["sha256"] = onnx_sha256
     manifest["input"]["shape"] = list(variant["input_shape"])
+    if variant_name.startswith("seg-"):
+        queries = variant.get("queries", 300)
+        mask_shape = inspection["outputs"]["masks"]
+        manifest["outputs"] = [
+            {
+                "name": "dets",
+                "element_type": "float32",
+                "shape": [1, queries, 4],
+                "meaning": "normalized_cxcywh",
+            },
+            {
+                "name": "labels",
+                "element_type": "float32",
+                "shape": [1, queries, 91],
+                "meaning": "per_query_class_logits",
+            },
+            {
+                "name": "masks",
+                "element_type": "float32",
+                "shape": mask_shape,
+                "meaning": "per_query_instance_masks",
+            },
+        ]
     manifest_path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -223,13 +292,18 @@ def main() -> int:
             f"Unexpected ONNX filename: expected "
             f"{variant['onnx_filename']}, actual {exported.name}"
         )
-    inspection = inspect_onnx(exported, list(variant["input_shape"]))
+    inspection = inspect_onnx(
+        exported,
+        list(variant["input_shape"]),
+        variant.get("queries", 300),
+        args.variant.startswith("seg-"),
+    )
     onnx_sha256 = sha256_file(exported)
     checkpoint_sha256 = sha256_file(args.checkpoint)
     if args.update_manifest:
         update_manifest(
             args.manifest, args.variant, variant, onnx_sha256,
-            checkpoint_sha256,
+            checkpoint_sha256, inspection,
         )
 
     record = {

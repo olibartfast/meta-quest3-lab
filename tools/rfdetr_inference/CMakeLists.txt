@@ -43,6 +43,12 @@ if(NOT TARGET camera_source)
         ${CMAKE_CURRENT_BINARY_DIR}/camera_source
     )
 endif()
+if(NOT TARGET monitor_corners)
+    add_subdirectory(
+        ${CMAKE_CURRENT_LIST_DIR}/../monitor_corners
+        ${CMAKE_CURRENT_BINARY_DIR}/monitor_corners
+    )
+endif()
 
 add_library(rfdetr_inference_core STATIC
     src/detection_io.cpp
@@ -163,7 +169,10 @@ if(QUESTLAB_RFDETR_BUILD_TOOL)
     )
     if(UNIX)
         add_executable(rfdetr_service src/service_main.cpp)
-        target_link_libraries(rfdetr_service PRIVATE rfdetr_inference_core)
+        target_link_libraries(rfdetr_service PRIVATE
+            rfdetr_inference_core
+            monitor_corners
+        )
         target_compile_options(rfdetr_service PRIVATE
             -Wall
             -Wextra

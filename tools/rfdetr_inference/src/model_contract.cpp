@@ -119,13 +119,22 @@ void ValidateSupportedContract(ModelContract& contract) {
     Require(contract.outputs[0].name == "dets", "box output name");
     Require(
         contract.outputs[0].elementType == "float32" &&
-        contract.outputs[0].shape == std::vector<int64_t>({1, 300, 4}) &&
+        contract.outputs[0].shape.size() == 3U &&
+        contract.outputs[0].shape[0] == 1 &&
+        contract.outputs[0].shape[1] > 0 &&
+        contract.outputs[0].shape[2] == 4 &&
         contract.outputs[0].meaning == "normalized_cxcywh",
         "box output contract");
+    const int64_t queryCount = contract.outputs[0].shape[1];
+    const int64_t expectedQueries =
+        contract.variant == "seg-small" ? 100 : 300;
+    Require(queryCount == expectedQueries, "query count");
     Require(contract.outputs[1].name == "labels", "label output name");
     Require(
         contract.outputs[1].elementType == "float32" &&
-        contract.outputs[1].shape == std::vector<int64_t>({1, 300, 91}) &&
+        contract.outputs[1].shape ==
+            std::vector<int64_t>(
+                {1, queryCount, 91}) &&
         contract.outputs[1].meaning == "per_query_class_logits",
         "label output contract");
     contract.hasMasks = false;
@@ -137,7 +146,7 @@ void ValidateSupportedContract(ModelContract& contract) {
         Require(masks.name == "masks", "mask output name");
         Require(
             masks.elementType == "float32" && masks.shape.size() == 4U &&
-            masks.shape[0] == 1 && masks.shape[1] == 300 &&
+            masks.shape[0] == 1 && masks.shape[1] == queryCount &&
             masks.shape[2] > 0 && masks.shape[3] > 0 &&
             masks.meaning == "per_query_instance_masks",
             "mask output contract");

@@ -1,4 +1,5 @@
 #include "camera_source/camera_source.h"
+#include "monitor_corners/monitor_corners.h"
 #include "rfdetr_inference/model_contract.h"
 #include "rfdetr_inference/onnx_session.h"
 #include "rfdetr_inference/postprocessing.h"
@@ -34,6 +35,11 @@ struct Options {
     std::string tritonUrl;
     std::string tritonModel = "rfdetr_nano";
     std::string tritonVersion = "1";
+    // Object size for SolveQuadPose on seg-mask quads (QLD2 corners).
+    // Class-agnostic: every masked detection gets a quad; the pose is
+    // solved with this size for all of them.
+    float objectWidthMeters = 0.55F;
+    float objectHeightMeters = 0.32F;
 };
 
 int64_t SteadyNanoseconds() {
@@ -47,7 +53,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
         if ((argument == "--manifest" || argument == "--model" ||
              argument == "--port" || argument == "--triton-url" ||
              argument == "--triton-model" ||
-             argument == "--triton-version") &&
+             argument == "--triton-version" ||
+             argument == "--monitor-size" ||
+             argument == "--object-size") &&
             index + 1 >= argc) {
             return false;
         }
@@ -68,6 +76,25 @@ bool ParseOptions(int argc, char** argv, Options* options) {
                     return false;
                 }
                 options->port = static_cast<uint16_t>(parsed);
+            } catch (const std::exception&) {
+                return false;
+            }
+        } else if (
+            argument == "--monitor-size" || argument == "--object-size") {
+            try {
+                const std::string value = argv[++index];
+                const size_t comma = value.find(',');
+                if (comma == std::string::npos) {
+                    return false;
+                }
+                options->objectWidthMeters =
+                    std::stof(value.substr(0, comma));
+                options->objectHeightMeters =
+                    std::stof(value.substr(comma + 1U));
+                if (options->objectWidthMeters <= 0.0F ||
+                    options->objectHeightMeters <= 0.0F) {
+                    return false;
+                }
             } catch (const std::exception&) {
                 return false;
             }
@@ -145,17 +172,73 @@ bool SendFloat(int socket, float value) {
     return SendU32(socket, bits);
 }
 
+bool ReceiveFloat(int socket, float* value) {
+    uint32_t wire = 0;
+    if (!ReceiveU32(socket, &wire)) {
+        return false;
+    }
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    std::memcpy(value, &wire, sizeof(*value));
+    return true;
+}
+
+// Mask-capable inference dispatch: ONNX sessions serve seg contracts via
+// RunWithMasks; Triton seg outputs are not wired yet and fail closed.
+bool RunServiceMasks(
+    questlab::rfdetr::OnnxSession* session,
+    const std::vector<float>& input,
+    std::vector<float>* boxes,
+    std::vector<float>* logits,
+    std::vector<float>* masks,
+    std::vector<int64_t>* maskShape,
+    std::string* error) {
+    return session->RunWithMasks(input, boxes, logits, masks, maskShape,
+                                 error);
+}
+
+bool RunServiceMasks(
+    questlab::rfdetr::TritonSession*,
+    const std::vector<float>&,
+    std::vector<float>*,
+    std::vector<float>*,
+    std::vector<float>*,
+    std::vector<int64_t>*,
+    std::string* error) {
+    if (error != nullptr) {
+        *error = "Seg contracts need an ONNX session; Triton seg outputs "
+                 "are not wired";
+    }
+    return false;
+}
+
+struct ServedCorners {
+    bool hasQuad = false;
+    std::array<float, 8> quadXy{};
+    bool hasPose = false;
+    std::array<float, 4> quatXyzw{};
+    std::array<float, 3> position{};
+    float reprojectionPixels = -1.0F;
+};
+
 template <typename Session>
 bool ServeClient(
     int client,
     const questlab::rfdetr::ModelContract& contract,
-    Session* session) {
+    Session* session,
+    const Options& options) {
     std::array<char, 4> magic{};
     std::array<char, kIdentityBytes> clientIdentity{};
     if (!ReceiveAll(client, magic.data(), magic.size()) ||
-        magic != std::array<char, 4>{'Q', 'L', 'D', '1'} ||
+        (magic != std::array<char, 4>{'Q', 'L', 'D', '1'} &&
+         magic != std::array<char, 4>{'Q', 'L', 'D', '2'}) ||
         !ReceiveAll(
             client, clientIdentity.data(), clientIdentity.size())) {
+        return false;
+    }
+    // QLD2 (screen-corner quads + poses) is served from seg masks; a box
+    // contract has no mask source, so it fails closed here.
+    const bool corners = magic[3] == '2';
+    if (corners && !contract.hasMasks) {
         return false;
     }
     std::array<char, kIdentityBytes> serverIdentity{};
@@ -168,7 +251,7 @@ bool ServeClient(
         identityMatches ? 'Q' : 'E',
         identityMatches ? 'L' : 'R',
         identityMatches ? 'D' : 'R',
-        '1',
+        magic[3],
     };
     if (!SendAll(client, replyMagic, sizeof(replyMagic)) ||
         !SendAll(client, serverIdentity.data(), serverIdentity.size()) ||
@@ -183,6 +266,10 @@ bool ServeClient(
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t byteCount = 0;
+        float fx = 0.0F;
+        float fy = 0.0F;
+        float cx = 0.0F;
+        float cy = 0.0F;
         if (!ReceiveAll(client, frameMagic.data(), frameMagic.size())) {
             return true;
         }
@@ -193,7 +280,11 @@ bool ServeClient(
             !ReceiveU32(client, &height) ||
             !ReceiveU32(client, &byteCount) || width == 0 || height == 0 ||
             width > kMaximumDimension || height > kMaximumDimension ||
-            static_cast<uint64_t>(width) * height * 4U != byteCount) {
+            static_cast<uint64_t>(width) * height * 4U != byteCount ||
+            (corners && (!ReceiveFloat(client, &fx) ||
+                         !ReceiveFloat(client, &fy) ||
+                         !ReceiveFloat(client, &cx) ||
+                         !ReceiveFloat(client, &cy)))) {
             return false;
         }
         questlab::camera::RgbCapture capture;
@@ -218,21 +309,84 @@ bool ServeClient(
         std::vector<float> input;
         std::vector<float> boxes;
         std::vector<float> logits;
+        std::vector<float> maskLogits;
+        std::vector<int64_t> maskShape;
         std::vector<questlab::rfdetr::Detection> detections;
+        std::vector<ServedCorners> detectionsCorners;
         std::string error;
-        if (!questlab::rfdetr::PreprocessCapture(
-                capture, contract, &rgba, &input, &error) ||
-            !session->Run(input, &boxes, &logits, &error) ||
-            !questlab::rfdetr::PostprocessDetections(
-                boxes,
-                logits,
-                capture.width,
-                capture.height,
-                contract,
-                &detections,
-                &error)) {
+        bool inferOk = questlab::rfdetr::PreprocessCapture(
+            capture, contract, &rgba, &input, &error);
+        if (inferOk) {
+            if (contract.hasMasks) {
+                inferOk = RunServiceMasks(
+                              session, input, &boxes, &logits, &maskLogits,
+                              &maskShape, &error) &&
+                    questlab::rfdetr::PostprocessDetectionsWithMasks(
+                              boxes,
+                              logits,
+                              maskLogits,
+                              capture.width,
+                              capture.height,
+                              0.0F,
+                              contract,
+                              &detections,
+                              &error);
+            } else {
+                inferOk = session->Run(input, &boxes, &logits, &error) &&
+                    questlab::rfdetr::PostprocessDetections(
+                              boxes,
+                              logits,
+                              capture.width,
+                              capture.height,
+                              contract,
+                              &detections,
+                              &error);
+            }
+        }
+        if (!inferOk) {
             std::cerr << "Frame " << frameId << " failed: " << error << '\n';
             return false;
+        }
+        if (corners) {
+            // Class-agnostic: every masked detection gets a quad attempt.
+            // A mask that is not quadrilateral yields no corners rather
+            // than a guess; same for a failed pose solve.
+            detectionsCorners.resize(detections.size());
+            const questlab::corners::Intrinsics intrinsics{
+                fx, fy, cx, cy};
+            for (size_t index = 0; index < detections.size(); ++index) {
+                const auto& detection = detections[index];
+                auto& served = detectionsCorners[index];
+                if (!detection.hasMask) {
+                    continue;
+                }
+                questlab::corners::Quad quad{};
+                if (!questlab::corners::FindScreenQuadFromMask(
+                        detection.mask.data(), detection.maskWidth,
+                        detection.maskHeight, &quad, &error)) {
+                    continue;
+                }
+                served.hasQuad = true;
+                for (size_t corner = 0; corner < 4; ++corner) {
+                    served.quadXy[corner * 2U] = quad.corners[corner].x;
+                    served.quadXy[corner * 2U + 1U] =
+                        quad.corners[corner].y;
+                }
+                questlab::corners::Pose pose{};
+                if (!questlab::corners::SolveQuadPose(
+                        quad, intrinsics, options.objectWidthMeters,
+                        options.objectHeightMeters, &pose, &served.reprojectionPixels,
+                        &error)) {
+                    continue;
+                }
+                served.hasPose = true;
+                for (size_t component = 0; component < 4; ++component) {
+                    served.quatXyzw[component] = pose.quat[component];
+                }
+                for (size_t component = 0; component < 3; ++component) {
+                    served.position[component] = pose.position[component];
+                }
+            }
         }
         const int64_t inferenceEnd = SteadyNanoseconds();
         const char detectionMagic[4] = {'D', 'E', 'T', '1'};
@@ -243,7 +397,8 @@ bool ServeClient(
             !SendU32(client, static_cast<uint32_t>(detections.size()))) {
             return false;
         }
-        for (const auto& detection : detections) {
+        for (size_t index = 0; index < detections.size(); ++index) {
+            const auto& detection = detections[index];
             if (!SendU32(client, static_cast<uint32_t>(detection.classId)) ||
                 !SendFloat(client, detection.confidence)) {
                 return false;
@@ -259,6 +414,33 @@ bool ServeClient(
                     detection.className.data(),
                     detection.className.size())) {
                 return false;
+            }
+            if (corners) {
+                // QLD2 corner extension, mirroring the client's reader:
+                // presence flag, quad, pose flag, pose.
+                const ServedCorners& served = detectionsCorners[index];
+                if (!SendU32(client, served.hasQuad ? 1U : 0U)) {
+                    return false;
+                }
+                if (served.hasQuad) {
+                    for (float coordinate : served.quadXy) {
+                        if (!SendFloat(client, coordinate)) return false;
+                    }
+                }
+                if (!SendU32(client, served.hasPose ? 1U : 0U)) {
+                    return false;
+                }
+                if (served.hasPose) {
+                    for (float component : served.quatXyzw) {
+                        if (!SendFloat(client, component)) return false;
+                    }
+                    for (float component : served.position) {
+                        if (!SendFloat(client, component)) return false;
+                    }
+                    if (!SendFloat(client, served.reprojectionPixels)) {
+                        return false;
+                    }
+                }
             }
         }
         std::cout << "frame=" << frameId
@@ -276,7 +458,8 @@ int main(int argc, char** argv) {
     if (!ParseOptions(argc, argv, &options)) {
         std::cerr << "Usage: rfdetr_service --manifest PATH "
                      "[--model PATH | --triton-url URL] [--triton-model NAME] "
-                     "[--triton-version VER] [--port 48110]\n";
+                     "[--triton-version VER] [--port 48110] "
+                     "[--object-size W,H]\n";
         return 2;
     }
     questlab::rfdetr::ModelContract contract;
@@ -356,8 +539,8 @@ int main(int argc, char** argv) {
         }
         std::cout << "client connected\n";
         const bool served = useTriton
-            ? ServeClient(client, contract, &tritonSession)
-            : ServeClient(client, contract, &onnxSession);
+            ? ServeClient(client, contract, &tritonSession, options)
+            : ServeClient(client, contract, &onnxSession, options);
         if (!served) {
             std::cerr << "client session rejected or failed\n";
         }
