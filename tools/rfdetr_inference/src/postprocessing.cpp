@@ -31,6 +31,34 @@ bool PostprocessDetections(
     const ModelContract& contract,
     std::vector<Detection>* detections,
     std::string* error) {
+    if (contract.hasMasks) {
+        if (error != nullptr) {
+            *error = "Seg contract needs PostprocessDetectionsWithMasks";
+        }
+        return false;
+    }
+    return PostprocessDetectionsWithMasks(
+        normalizedCxcywh,
+        classLogits,
+        {},
+        sourceWidth,
+        sourceHeight,
+        0.0F,
+        contract,
+        detections,
+        error);
+}
+
+bool PostprocessDetectionsWithMasks(
+    const std::vector<float>& normalizedCxcywh,
+    const std::vector<float>& classLogits,
+    const std::vector<float>& maskLogits,
+    int32_t sourceWidth,
+    int32_t sourceHeight,
+    float maskThreshold,
+    const ModelContract& contract,
+    std::vector<Detection>* detections,
+    std::string* error) {
     if (detections == nullptr) {
         if (error != nullptr) {
             *error = "Detection output pointer is null";
@@ -39,13 +67,40 @@ bool PostprocessDetections(
     }
     detections->clear();
     if (sourceWidth <= 0 || sourceHeight <= 0 ||
-        contract.outputs.size() != 2U ||
+        (contract.outputs.size() != 2U && contract.outputs.size() != 3U) ||
         contract.outputs[0].shape.size() != 3U ||
         contract.outputs[1].shape.size() != 3U) {
         if (error != nullptr) {
             *error = "Invalid source or output contract dimensions";
         }
         return false;
+    }
+    if (contract.hasMasks) {
+        if (contract.outputs.size() != 3U || contract.maskHeight <= 0 ||
+            contract.maskWidth <= 0 || !std::isfinite(maskThreshold)) {
+            if (error != nullptr) {
+                *error = "Seg contract mask dimensions are invalid";
+            }
+            return false;
+        }
+        const size_t expectedMasks =
+            static_cast<size_t>(contract.outputs[0].shape[1]) *
+            static_cast<size_t>(contract.maskHeight) *
+            static_cast<size_t>(contract.maskWidth);
+        if (maskLogits.size() != expectedMasks) {
+            if (error != nullptr) {
+                *error = "RF-DETR mask tensor size does not match the manifest";
+            }
+            return false;
+        }
+        for (float value : maskLogits) {
+            if (!std::isfinite(value)) {
+                if (error != nullptr) {
+                    *error = "RF-DETR mask output contains NaN or infinity";
+                }
+                return false;
+            }
+        }
     }
     const size_t queryCount =
         static_cast<size_t>(contract.outputs[0].shape[1]);
@@ -146,6 +201,41 @@ bool PostprocessDetections(
             }
             return false;
         }
+        if (contract.hasMasks) {
+            // Nearest-neighbour upsample of this query's mask grid to
+            // source pixels; a logit above threshold keeps the pixel.
+            // Same convention as rf-detr-cpp-inference's
+            // resize_threshold_mask at threshold 0.0 on raw logits.
+            const int64_t gridH = contract.maskHeight;
+            const int64_t gridW = contract.maskWidth;
+            const size_t gridStep =
+                static_cast<size_t>(gridH) * static_cast<size_t>(gridW);
+            const size_t gridBase = queryIndex * gridStep;
+            detection.hasMask = true;
+            detection.maskWidth = sourceWidth;
+            detection.maskHeight = sourceHeight;
+            detection.mask.resize(
+                static_cast<size_t>(sourceWidth) *
+                static_cast<size_t>(sourceHeight));
+            for (int32_t y = 0; y < sourceHeight; ++y) {
+                const int64_t gridY =
+                    static_cast<int64_t>(y) * gridH / sourceHeight;
+                for (int32_t x = 0; x < sourceWidth; ++x) {
+                    const int64_t gridX =
+                        static_cast<int64_t>(x) * gridW / sourceWidth;
+                    const float logit = maskLogits
+                        [gridBase +
+                         static_cast<size_t>(gridY) *
+                             static_cast<size_t>(gridW) +
+                         static_cast<size_t>(gridX)];
+                    detection.mask
+                        [static_cast<size_t>(y) *
+                             static_cast<size_t>(sourceWidth) +
+                         static_cast<size_t>(x)] =
+                            logit > maskThreshold ? 1U : 0U;
+                }
+            }
+        }
         detections->push_back(std::move(detection));
     }
     return true;
@@ -234,6 +324,97 @@ ComparisonResult CompareDetections(
         used[bestIndex] = true;
     }
     return {true, "Detections match"};
+}
+
+std::vector<uint32_t> EncodeMaskRle(
+    const std::vector<uint8_t>& mask,
+    int32_t width,
+    int32_t height) {
+    std::vector<uint32_t> runs;
+    if (width <= 0 || height <= 0 ||
+        mask.size() !=
+            static_cast<size_t>(width) * static_cast<size_t>(height)) {
+        return runs;
+    }
+    // One run list per row: (runLength, value) pairs, so a dropped tail
+    // corrupts one row, never the row alignment of the whole mask.
+    for (int32_t y = 0; y < height; ++y) {
+        const size_t base =
+            static_cast<size_t>(y) * static_cast<size_t>(width);
+        uint32_t length = 1;
+        for (int32_t x = 1; x < width; ++x) {
+            if (mask[base + static_cast<size_t>(x)] ==
+                mask[base + static_cast<size_t>(x) - 1]) {
+                ++length;
+                continue;
+            }
+            runs.push_back(length);
+            runs.push_back(mask[base + static_cast<size_t>(x) - 1] ? 1U : 0U);
+            length = 1;
+        }
+        runs.push_back(length);
+        runs.push_back(
+            mask[base + static_cast<size_t>(width) - 1] ? 1U : 0U);
+    }
+    return runs;
+}
+
+bool DecodeMaskRle(
+    const std::vector<uint32_t>& runs,
+    int32_t width,
+    int32_t height,
+    std::vector<uint8_t>* mask,
+    std::string* error) {
+    if (mask == nullptr) {
+        if (error != nullptr) {
+            *error = "Mask output pointer is null";
+        }
+        return false;
+    }
+    mask->clear();
+    if (width <= 0 || height <= 0 || runs.size() % 2U != 0U) {
+        if (error != nullptr) {
+            *error = "Invalid mask RLE dimensions";
+        }
+        return false;
+    }
+    mask->reserve(
+        static_cast<size_t>(width) * static_cast<size_t>(height));
+    size_t cursor = 0;
+    for (int32_t y = 0; y < height; ++y) {
+        int32_t filled = 0;
+        while (filled < width) {
+            if (cursor + 2U > runs.size()) {
+                if (error != nullptr) {
+                    *error = "Truncated mask RLE run";
+                }
+                mask->clear();
+                return false;
+            }
+            const uint32_t length = runs[cursor];
+            const uint32_t value = runs[cursor + 1U];
+            cursor += 2U;
+            if (length == 0U || value > 1U ||
+                filled + static_cast<int32_t>(length) > width) {
+                if (error != nullptr) {
+                    *error = "Invalid mask RLE run";
+                }
+                mask->clear();
+                return false;
+            }
+            mask->insert(
+                mask->end(), length, value ? 1U : 0U);
+            filled += static_cast<int32_t>(length);
+        }
+    }
+    if (cursor != runs.size()) {
+        if (error != nullptr) {
+            *error = "Trailing mask RLE data";
+        }
+        mask->clear();
+        return false;
+    }
+    return true;
 }
 
 }  // namespace questlab::rfdetr

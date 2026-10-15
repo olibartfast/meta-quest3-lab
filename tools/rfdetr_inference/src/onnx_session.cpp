@@ -179,10 +179,22 @@ bool OnnxSession::Run(
     std::vector<float>* boxes,
     std::vector<float>* logits,
     std::string* error) {
+    return RunWithMasks(inputTensor, boxes, logits, nullptr, nullptr, error);
+}
+
+bool OnnxSession::RunWithMasks(
+    const std::vector<float>& inputTensor,
+    std::vector<float>* boxes,
+    std::vector<float>* logits,
+    std::vector<float>* masks,
+    std::vector<int64_t>* maskShape,
+    std::string* error) {
 #if !defined(QUESTLAB_HAS_ONNXRUNTIME)
     (void)inputTensor;
     (void)boxes;
     (void)logits;
+    (void)masks;
+    (void)maskShape;
     if (error != nullptr) {
         *error = "ONNX Runtime backend is unavailable";
     }
@@ -241,7 +253,8 @@ bool OnnxSession::Run(
             std::lock_guard<std::mutex> lock(impl_->runOptionsMutex);
             impl_->activeRunOptions = nullptr;
         }
-        if (outputs.size() != 2U) {
+        if (outputs.size() < 2U ||
+            outputs.size() > 3U) {
             throw std::runtime_error("ONNX Runtime returned an output count mismatch");
         }
         const size_t boxCount = outputs[0].GetTensorTypeAndShapeInfo()
@@ -252,6 +265,22 @@ bool OnnxSession::Run(
         const float* logitData = outputs[1].GetTensorData<float>();
         boxes->assign(boxData, boxData + boxCount);
         logits->assign(logitData, logitData + logitCount);
+        if (masks != nullptr || maskShape != nullptr) {
+            if (outputs.size() != 3U) {
+                throw std::runtime_error(
+                    "Mask retrieval requested from a box-only model");
+            }
+            const auto maskInfo =
+                outputs[2].GetTensorTypeAndShapeInfo();
+            const size_t maskCount = maskInfo.GetElementCount();
+            const float* maskData = outputs[2].GetTensorData<float>();
+            if (masks != nullptr) {
+                masks->assign(maskData, maskData + maskCount);
+            }
+            if (maskShape != nullptr) {
+                *maskShape = maskInfo.GetShape();
+            }
+        }
         return true;
     } catch (const std::exception& exception) {
         {
