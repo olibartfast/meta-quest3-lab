@@ -1,0 +1,73 @@
+#pragma once
+
+// Screen-corner correspondences, OpenCV-free: quad extraction from a
+// binary instance mask plus planar P4P pose. This is the on-device port of
+// tools/monitor_corners (the host tool keeps its OpenCV implementation for
+// reference); the pairing contract and gates match it.
+//
+// Corner order everywhere is image TL, TR, BR, BL (y down). It pairs with
+// the object rectangle (-W/2,+H/2), (+W/2,+H/2), (+W/2,-H/2), (-W/2,-H/2)
+// with +Y up: image-top maps to object-top. Keep the pairing; pose quality
+// depends on it, not on which corner is "first" beyond consistency.
+
+#include <array>
+#include <cstdint>
+#include <string>
+
+namespace questlab::corners {
+
+struct Point2 {
+    float x = 0.0F;
+    float y = 0.0F;
+};
+
+struct Quad {
+    // TL, TR, BR, BL in pixels of the source image.
+    std::array<Point2, 4> corners{};
+    // Fit quality in [0, 1]: quad area share of the mask foreground
+    // (rectangularity).
+    float score = 0.0F;
+};
+
+struct Intrinsics {
+    float fx = 0.0F;
+    float fy = 0.0F;
+    float cx = 0.0F;
+    float cy = 0.0F;
+};
+
+struct Pose {
+    // Unit quaternion (x, y, z, w): object frame to camera frame.
+    std::array<float, 4> quat{0.0F, 0.0F, 0.0F, 1.0F};
+    // Object origin in the camera frame, metres: +X right, +Y down,
+    // +Z forward (Camera2 basis, matching detection pixels directly).
+    std::array<float, 3> position{0.0F, 0.0F, 0.0F};
+};
+
+// Largest quad in a binary instance mask (row-major, nonzero is
+// foreground). Returns false with a reason when no quad survives the
+// area/aspect gates: an empty answer is correct output, never a guess.
+// Binary masks carry no gradients, so pixel vertices are the measurement
+// (no subpixel refinement).
+bool FindScreenQuadFromMask(
+    const uint8_t* mask,
+    int width,
+    int height,
+    Quad* quad,
+    std::string* error);
+
+// Pose of the W×H display rectangle from its 4 image corners. The corners
+// are exactly planar, so the pose comes from the homography of the object
+// plane: K^-1 H = s [r1 r2 t], orthonormalized - the standard planar P4P.
+// Reprojection RMS (pixels) reports the fit; large values mean the quad is
+// not the screen (wrong pairing or bent contour) - distrust the pose.
+bool SolveQuadPose(
+    const Quad& quad,
+    const Intrinsics& intrinsics,
+    float monitorWidthMeters,
+    float monitorHeightMeters,
+    Pose* pose,
+    float* reprojectionErrorPixels,
+    std::string* error);
+
+}  // namespace questlab::corners
