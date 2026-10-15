@@ -70,6 +70,8 @@ struct Detection {
     std::array<float, 4> cornerQuatXyzw{};
     std::array<float, 3> cornerPosition{};
     float cornerReprojectionPixels = -1.0F;
+    // Object width,height (metres) the pose was solved with.
+    std::array<float, 2> cornerSizeWH{{0.0F, 0.0F}};
 };
 
 struct DetectionResult {

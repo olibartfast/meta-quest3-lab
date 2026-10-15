@@ -259,6 +259,12 @@ struct FrameImage {
 struct PreparedObject {
     questlab::detection::Detection detection;
     questlab::projection::DetectionProjection projection;
+    // Corner-pose extension (QLD2 services). The PnP pose arrives in the
+    // capture camera frame and is converted to LOCAL on the worker; it stays
+    // absent when the service fitted no quad or the transform rejected it.
+    bool hasCornerPoseLocal = false;
+    questlab::math::Pose cornerPoseLocal{};
+    std::array<float, 2> cornerSizeWH{{0.0F, 0.0F}};
     // Present only when depth supported a metric fit. A detection without a
     // box is rendered as nothing rather than as a guess.
     bool hasBox = false;
@@ -701,6 +707,87 @@ private:
             PreparedObject object;
             object.detection = detection;
             object.projection = projected;
+            // Corner-pose extension: map the service's capture-camera PnP
+            // pose into LOCAL. Reuses the exact camera->LOCAL convention of
+            // BuildDetectionProjection (libs/detection_projection): normalize
+            // the Camera2 cameraFromHead orientation, invert it to
+            // headFromCamera, then route points and directions through the
+            // normalized head pose. Any non-finite input or failed normalize
+            // leaves hasCornerPoseLocal false so nothing is drawn.
+            if (detection.hasCornerPose &&
+                std::isfinite(detection.cornerPosition[0]) &&
+                std::isfinite(detection.cornerPosition[1]) &&
+                std::isfinite(detection.cornerPosition[2]) &&
+                std::isfinite(detection.cornerQuatXyzw[0]) &&
+                std::isfinite(detection.cornerQuatXyzw[1]) &&
+                std::isfinite(detection.cornerQuatXyzw[2]) &&
+                std::isfinite(detection.cornerQuatXyzw[3]) &&
+                detection.cornerSizeWH[0] > 0.0F &&
+                detection.cornerSizeWH[1] > 0.0F) {
+                questlab::math::Quat cameraFromHeadRotation{
+                    record->cameraCalibration.orientation[0],
+                    record->cameraCalibration.orientation[1],
+                    record->cameraCalibration.orientation[2],
+                    record->cameraCalibration.orientation[3],
+                };
+                questlab::math::Quat cornerCameraFromObject{
+                    detection.cornerQuatXyzw[0],
+                    detection.cornerQuatXyzw[1],
+                    detection.cornerQuatXyzw[2],
+                    detection.cornerQuatXyzw[3],
+                };
+                questlab::math::Pose normalizedLocalFromHead =
+                    record->localFromHead;
+                if (questlab::math::Normalize(&cameraFromHeadRotation) &&
+                    questlab::math::Normalize(&cornerCameraFromObject) &&
+                    questlab::math::Normalize(
+                        &normalizedLocalFromHead.orientation)) {
+                    const questlab::math::Quat headFromCameraRotation =
+                        questlab::math::Conjugate(cameraFromHeadRotation);
+                    const questlab::math::Vec3 cameraOriginInHead{
+                        record->cameraCalibration.position[0],
+                        record->cameraCalibration.position[1],
+                        record->cameraCalibration.position[2],
+                    };
+                    // Build each object basis vector in the capture-camera
+                    // frame, rotate it into the head frame, then directionally
+                    // into LOCAL -- the same normalize-then-transform order as
+                    // detection_projection.cpp.
+                    const auto axisToLocal =
+                        [&](const questlab::math::Vec3& axis) {
+                            return questlab::math::TransformDirection(
+                                normalizedLocalFromHead,
+                                questlab::math::Rotate(
+                                    headFromCameraRotation,
+                                    questlab::math::Rotate(
+                                        cornerCameraFromObject, axis)));
+                        };
+                    questlab::math::Quat cornerOrientationLocal;
+                    if (questlab::math::QuatFromBasis(
+                            axisToLocal({1.0F, 0.0F, 0.0F}),
+                            axisToLocal({0.0F, 1.0F, 0.0F}),
+                            axisToLocal({0.0F, 0.0F, 1.0F}),
+                            &cornerOrientationLocal)) {
+                        const questlab::math::Vec3 cornerPositionInCamera{
+                            detection.cornerPosition[0],
+                            detection.cornerPosition[1],
+                            detection.cornerPosition[2],
+                        };
+                        object.cornerPoseLocal.orientation =
+                            cornerOrientationLocal;
+                        object.cornerPoseLocal.position =
+                            questlab::math::TransformPoint(
+                                normalizedLocalFromHead,
+                                questlab::math::Add(
+                                    cameraOriginInHead,
+                                    questlab::math::Rotate(
+                                        headFromCameraRotation,
+                                        cornerPositionInCamera)));
+                        object.cornerSizeWH = detection.cornerSizeWH;
+                        object.hasCornerPoseLocal = true;
+                    }
+                }
+            }
             // Fusion runs here, on the worker, over the most recent depth
             // point set. A detection older than the depth is still usable:
             // both are expressed in LOCAL, so no pixel registration is
@@ -862,7 +949,8 @@ private:
         for (const auto& detection : result.detections) {
             questlab::LogInfo(
                 "DETECTION frame=%llu class_id=%d class=%s confidence=%.3f "
-                "box=[%.1f %.1f %.1f %.1f] age_ms=%lld inference_ms=%.1f",
+                "box=[%.1f %.1f %.1f %.1f] age_ms=%lld inference_ms=%.1f "
+                "corner_reproj_px=%.2f",
                 static_cast<unsigned long long>(result.frameId),
                 detection.classId,
                 detection.className.c_str(),
@@ -872,7 +960,8 @@ private:
                 detection.boxXyxy[2],
                 detection.boxXyxy[3],
                 static_cast<long long>(ageMilliseconds),
-                prepared->inferenceMilliseconds);
+                prepared->inferenceMilliseconds,
+                detection.cornerReprojectionPixels);
         }
         {
             std::lock_guard<std::mutex> lock(outputMutex_);
@@ -1344,6 +1433,52 @@ public:
                                     fused.orientationInLocal)),
                             ScaleMatrix(
                                 axisLength, axisLength, axisLength)),
+                        {1.0F, 1.0F, 1.0F, 1.0F},
+                    });
+                }
+                // Corner-pose extension: when the service fitted a quad and
+                // its PnP pose converted to LOCAL, draw the object's plane as
+                // a rectangle plus an axes tripod at the same pose. The size
+                // is the solved object width/height in metres; the fused-box
+                // block above is untouched.
+                if (object->hasCornerPoseLocal &&
+                    object->cornerSizeWH[0] > 0.0F &&
+                    object->cornerSizeWH[1] > 0.0F) {
+                    const questlab::math::Mat4 cornerPose =
+                        questlab::math::Multiply(
+                            questlab::math::TranslationMatrix(
+                                object->cornerPoseLocal.position),
+                            questlab::math::RotationMatrix(
+                                object->cornerPoseLocal.orientation));
+                    // The screen spans object X/Y with +Z normal, matching
+                    // ScreenRectangle.
+                    draws->push_back({
+                        questlab::DebugLineShape::ScreenRectangle,
+                        questlab::math::Multiply(
+                            cornerPose,
+                            ScaleMatrix(
+                                object->cornerSizeWH[0],
+                                object->cornerSizeWH[1],
+                                1.0F)),
+                        color,
+                    });
+                    // Axes shader is 1m long; scale it to a readable length
+                    // derived from the corner size, same pose as the quad.
+                    const float cornerAxisLength = std::clamp(
+                        std::max(
+                            object->cornerSizeWH[0],
+                            object->cornerSizeWH[1]) *
+                            0.75F,
+                        0.15F,
+                        0.50F);
+                    draws->push_back({
+                        questlab::DebugLineShape::Axes,
+                        questlab::math::Multiply(
+                            cornerPose,
+                            ScaleMatrix(
+                                cornerAxisLength,
+                                cornerAxisLength,
+                                cornerAxisLength)),
                         {1.0F, 1.0F, 1.0F, 1.0F},
                     });
                 }

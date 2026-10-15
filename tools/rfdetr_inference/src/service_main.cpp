@@ -234,6 +234,9 @@ struct ServedCorners {
     std::array<float, 4> quatXyzw{};
     std::array<float, 3> position{};
     float reprojectionPixels = -1.0F;
+    // Object width,height (metres) the pose was solved with, echoed so
+    // the client can draw the face outline at the solved size.
+    std::array<float, 2> sizeWH{};
 };
 
 template <typename Session>
@@ -402,6 +405,7 @@ bool ServeClient(
                     continue;
                 }
                 served.hasPose = true;
+                served.sizeWH = known->second;
                 for (size_t component = 0; component < 4; ++component) {
                     served.quatXyzw[component] = pose.quat[component];
                 }
@@ -439,7 +443,7 @@ bool ServeClient(
             }
             if (corners) {
                 // QLD2 corner extension, mirroring the client's reader:
-                // presence flag, quad, pose flag, pose.
+                // presence flag, quad, pose flag, pose, solved size.
                 const ServedCorners& served = detectionsCorners[index];
                 if (!SendU32(client, served.hasQuad ? 1U : 0U)) {
                     return false;
@@ -461,6 +465,12 @@ bool ServeClient(
                     }
                     if (!SendFloat(client, served.reprojectionPixels)) {
                         return false;
+                    }
+                    // Object width then height (metres): the values the
+                    // pose was solved with, so the client can outline the
+                    // face at the solved size.
+                    for (float dimension : served.sizeWH) {
+                        if (!SendFloat(client, dimension)) return false;
                     }
                 }
             }
