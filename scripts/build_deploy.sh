@@ -11,10 +11,13 @@ app=""
 backend="ondevice"
 model_path="$repo_root/build/models/rfdetr/rfdetr-nano.onnx"
 manifest_path="$repo_root/tools/rfdetr_export/model-manifest.json"
+manifest_explicit=false
 service_host="127.0.0.1"
 service_port="48110"
 replay_detections=""
 allowed_classes=""
+triton_model=""
+class_sizes=""
 build_only=false
 vulkan_validation=false
 perfetto_tracing=false
@@ -55,6 +58,7 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             manifest_path="$2"
+            manifest_explicit=true
             shift 2
             ;;
         --service-host)
@@ -79,6 +83,22 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             allowed_classes="$2"
+            shift 2
+            ;;
+        --triton-model)
+            if [[ $# -lt 2 ]]; then
+                echo "--triton-model requires a value" >&2
+                exit 2
+            fi
+            triton_model="$2"
+            shift 2
+            ;;
+        --class-sizes)
+            if [[ $# -lt 2 ]]; then
+                echo "--class-sizes requires a value" >&2
+                exit 2
+            fi
+            class_sizes="$2"
             shift 2
             ;;	
         --replay-detections)
@@ -107,7 +127,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|replay}] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|triton|replay}] [--triton-model NAME] [--class-sizes label:W,H[;...]] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
             exit 2
             ;;
     esac
@@ -115,7 +135,7 @@ done
 
 if [[ -z "$app" ]]; then
     echo "Select an application with --app." >&2
-    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|replay}] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|triton|replay}] [--triton-model NAME] [--class-sizes label:W,H[;...]] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
     exit 2
 fi
 
@@ -378,11 +398,11 @@ fi
 
 if [[ "$app" == "10-rfdetr-detection" ]]; then
     case "$backend" in
-        ondevice|streaming|replay)
+        ondevice|streaming|triton|replay)
             ;;
         *)
             echo "Unknown detector backend: $backend" >&2
-            echo "Available backends: ondevice, streaming, replay" >&2
+            echo "Available backends: ondevice, streaming, triton, replay" >&2
             exit 2
             ;;
     esac
@@ -403,14 +423,79 @@ if [[ "$app" == "10-rfdetr-detection" ]]; then
         submission_hz="0.25"
         expiry_ms="20000"
     fi
-    printf '%s\n' \
-        "backend=$backend" \
-        "service_host=$service_host" \
-        "service_port=$service_port" \
-        "submission_hz=$submission_hz" \
-        "expiry_ms=$expiry_ms" \
-        "allowed_classes=$allowed_classes" \
-        "xnnpack_threads=4" | \
+    # Deploying an explicit manifest retargets the app's pinned contract
+    # identity to that manifest (streaming handshake / on-device check);
+    # on-device always pushes its manifest, and the Triton backend always
+    # pushes it (the app decodes tensors from its shapes). A seg manifest
+    # also turns on the QLD2 corner request for the legacy streaming path.
+    derive_identity=false
+    if [[ "$backend" == "ondevice" || "$backend" == "triton" ||
+          ( "$backend" == "streaming" && "$manifest_explicit" == true ) ]]; then
+        derive_identity=true
+    fi
+    model_identity=""
+    request_corners=""
+    if [[ "$derive_identity" == true && -f "$manifest_path" ]]; then
+        model_identity="$(
+            grep -o '"sha256": "[0-9a-f]\{64\}"' "$manifest_path" |
+                head -n 1 |
+                sed 's/.*"sha256": "//; s/"$//'
+        )"
+        if [[ "$backend" == "streaming" ]]; then
+            if grep -q '"masks"' "$manifest_path"; then
+                request_corners="1"
+            else
+                request_corners="0"
+            fi
+        fi
+    fi
+    if [[ "$backend" == "triton" ]]; then
+        if [[ ! -f "$manifest_path" ]]; then
+            echo "Triton backend requires the model manifest: $manifest_path" >&2
+            exit 1
+        fi
+        if [[ -z "$triton_model" ]]; then
+            model_variant="$(
+                grep -o '"variant": "[^"]*"' "$manifest_path" |
+                    head -n 1 |
+                    sed 's/.*"variant": "//; s/"$//'
+            )"
+            if [[ -n "$model_variant" ]]; then
+                triton_model="rfdetr_${model_variant//-/_}"
+            fi
+        fi
+        if [[ -z "$triton_model" ]]; then
+            echo "Cannot derive the Triton model name; pass --triton-model." >&2
+            exit 1
+        fi
+    fi
+    conf_lines=(
+        "backend=$backend"
+        "service_host=$service_host"
+        "service_port=$service_port"
+        "submission_hz=$submission_hz"
+        "expiry_ms=$expiry_ms"
+        "allowed_classes=$allowed_classes"
+        "xnnpack_threads=4"
+    )
+    if [[ "$backend" == "triton" ]]; then
+        conf_lines+=(
+            "triton_host=$service_host"
+            "triton_port=8000"
+            "triton_model=$triton_model"
+            "triton_version=1"
+        )
+        if [[ -n "$class_sizes" ]]; then
+            conf_lines+=("class_sizes=$class_sizes")
+        fi
+    fi
+    if [[ -n "$model_identity" ]]; then
+        conf_lines+=("model_identity=$model_identity")
+    fi
+    if [[ -n "$request_corners" ]]; then
+        conf_lines+=("request_corners=$request_corners")
+    fi
+    printf '%s\n' "${conf_lines[@]}" | \
         adb exec-in \
             "run-as $application_id sh -c 'cat > files/detector.conf'"
 
@@ -442,6 +527,13 @@ if [[ "$app" == "10-rfdetr-detection" ]]; then
     elif [[ "$backend" == "streaming" &&
             "$service_host" == "127.0.0.1" ]]; then
         adb reverse "tcp:$service_port" "tcp:$service_port"
+    elif [[ "$backend" == "triton" ]]; then
+        adb exec-in \
+            "run-as $application_id sh -c 'cat > files/model-manifest.json'" \
+            < "$manifest_path"
+        if [[ "$service_host" == "127.0.0.1" ]]; then
+            adb reverse tcp:8000 tcp:8000
+        fi
     elif [[ "$backend" == "replay" ]]; then
         if [[ ! -f "$replay_detections" ]]; then
             echo "Replay backend requires --replay-detections PATH." >&2

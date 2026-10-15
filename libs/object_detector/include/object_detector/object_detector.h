@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace questlab::detection {
@@ -13,6 +14,7 @@ namespace questlab::detection {
 enum class ObjectDetectorKind {
     OnDeviceOnnxRuntime,
     Streaming,
+    Triton,
     Replay,
 };
 
@@ -29,6 +31,11 @@ struct DetectorConfig {
     ObjectDetectorKind kind = ObjectDetectorKind::OnDeviceOnnxRuntime;
     std::string modelPath;
     std::string manifestPath;
+    // Contract identity: on-device it must match the loaded manifest's
+    // ONNX SHA-256; streaming sends it in the handshake. detector.conf
+    // "model_identity" (deploy script, from --manifest) overrides the
+    // app's compiled-in default so the target contract can switch
+    // (nano/medium/seg-small) without rebuilding the APK.
     std::string expectedManifestIdentity;
     std::string serviceHost = "127.0.0.1";
     uint16_t servicePort = 48110;
@@ -43,8 +50,24 @@ struct DetectorConfig {
     std::string allowedClassesCsv;
     // Ask the streaming service for screen-corner quads + PnP poses
     // (QLD2 protocol). Needs a corners-capable service; off by default so
-    // old services keep working.
+    // old services keep working. detector.conf "request_corners" (written
+    // by the deploy script for seg manifests) turns it on.
     bool requestCorners = false;
+    // Direct Triton (KServe v2 HTTP) backend: the app preprocesses and
+    // postprocesses locally and only the model tensors run on the server.
+    // No bridge process: detector.conf triton_host/triton_port/triton_model.
+    std::string tritonHost = "127.0.0.1";
+    uint16_t tritonPort = 8000;
+    std::string tritonModel;
+    std::string tritonVersion = "1";
+    // Per-class planar sizes (label -> {width, height} metres) for
+    // SolveQuadPose on seg-mask quads. Class-agnostic by construction:
+    // every masked detection gets a quad, but a pose is solved only for
+    // listed classes - an unlisted class has no known geometry, and a pose
+    // from a guessed size would be a wrong measurement, not a missing one.
+    std::unordered_map<std::string, std::array<float, 2>> classSizes = {
+        {"tv", {0.55F, 0.32F}},
+    };
 };
 
 struct DetectorCapabilities {
@@ -60,10 +83,10 @@ struct Detection {
     std::string className;
     float confidence = 0.0F;
     std::array<float, 4> boxXyxy{};
-    // Screen-corner extension (QLD2 services only): quad in source pixels
-    // (TL, TR, BR, BL) plus the PnP pose in the capture camera frame
-    // (+X right, +Y down, +Z forward) with its reprojection RMS. Absent
-    // unless the service fitted a quad.
+    // Screen-corner extension: quad in source pixels (TL, TR, BR, BL)
+    // plus the pose in the capture camera frame (+X right, +Y down, +Z
+    // forward) with its reprojection RMS. Filled locally for Triton seg
+    // contracts, or served by a QLD2 streaming service.
     bool hasCorners = false;
     std::array<float, 8> cornerXy{};
     bool hasCornerPose = false;

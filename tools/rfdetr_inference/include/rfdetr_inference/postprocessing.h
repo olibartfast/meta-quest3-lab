@@ -14,6 +14,11 @@ struct Detection {
     std::string className;
     float confidence = 0.0F;
     std::array<float, 4> boxXyxy{};
+    // Screen-corner extension (QLD2 services): quad in source pixels
+    // (TL, TR, BR, BL). Present only when the service fitted a quad; the
+    // diagnostic preview outlines the quad instead of the box.
+    bool hasCorners = false;
+    std::array<float, 8> cornerXy{};
     // Instance mask from a seg contract, decoded to source-image pixels
     // (row-major binary, size maskWidth * maskHeight). Empty when the
     // contract has no masks or this detection carries none.

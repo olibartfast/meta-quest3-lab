@@ -34,6 +34,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -165,6 +166,9 @@ questlab::detection::DetectorConfig LoadDetectorConfig(
                 if (value == "streaming") {
                     config.kind =
                         questlab::detection::ObjectDetectorKind::Streaming;
+                } else if (value == "triton") {
+                    config.kind =
+                        questlab::detection::ObjectDetectorKind::Triton;
                 } else if (value == "replay") {
                     config.kind =
                         questlab::detection::ObjectDetectorKind::Replay;
@@ -176,6 +180,42 @@ questlab::detection::DetectorConfig LoadDetectorConfig(
                 config.serviceHost = value;
             } else if (key == "service_port") {
                 config.servicePort = static_cast<uint16_t>(std::stoul(value));
+            } else if (key == "triton_host") {
+                config.tritonHost = value;
+            } else if (key == "triton_port") {
+                config.tritonPort = static_cast<uint16_t>(std::stoul(value));
+            } else if (key == "triton_model") {
+                config.tritonModel = value;
+            } else if (key == "triton_version") {
+                config.tritonVersion = value;
+            } else if (key == "class_sizes") {
+                // label:W,H;label:W,H - poses are solved only for listed
+                // classes; entries replace the tv default entirely.
+                std::unordered_map<std::string, std::array<float, 2>> sizes;
+                std::istringstream stream(value);
+                std::string entry;
+                while (std::getline(stream, entry, ';')) {
+                    if (entry.empty()) {
+                        continue;
+                    }
+                    const size_t colon = entry.find(':');
+                    const size_t comma =
+                        entry.find(',', colon + 1U);
+                    if (colon == std::string::npos ||
+                        comma == std::string::npos) {
+                        throw std::invalid_argument(
+                            "class_sizes entries are label:W,H");
+                    }
+                    const float width = std::stof(
+                        entry.substr(colon + 1U, comma - colon - 1U));
+                    const float height = std::stof(entry.substr(comma + 1U));
+                    if (width <= 0.0F || height <= 0.0F) {
+                        throw std::invalid_argument(
+                            "class_sizes must be positive");
+                    }
+                    sizes[entry.substr(0, colon)] = {width, height};
+                }
+                config.classSizes = std::move(sizes);
             } else if (key == "submission_hz") {
                 config.maximumSubmissionsPerSecond = std::stof(value);
             } else if (key == "expiry_ms") {
@@ -185,6 +225,14 @@ questlab::detection::DetectorConfig LoadDetectorConfig(
                 config.xnnpackThreads = std::stoi(value);
             } else if (key == "replay_frame_id") {
                 config.replayFrameId = std::stoull(value);
+            } else if (key == "request_corners") {
+                config.requestCorners = std::stoi(value) != 0;
+            } else if (key == "model_identity") {
+                if (value.size() != 64U) {
+                    throw std::invalid_argument(
+                        "model_identity must be a 64-character hex string");
+                }
+                config.expectedManifestIdentity = value;
             } else if (key == "allowed_classes") {
                 config.allowedClassesCsv = value;
             }
@@ -217,6 +265,7 @@ const char* BackendName(questlab::detection::ObjectDetectorKind kind) {
     switch (kind) {
         case ObjectDetectorKind::OnDeviceOnnxRuntime: return "ONDEVICE";
         case ObjectDetectorKind::Streaming: return "STREAMING";
+        case ObjectDetectorKind::Triton: return "TRITON";
         case ObjectDetectorKind::Replay: return "REPLAY";
     }
     return "UNKNOWN";
@@ -1184,10 +1233,12 @@ public:
         }
         detectorRunning_ = pipeline_.Start(detectorConfig_);
         questlab::LogInfo(
-            "Detector start backend=%s result=%s model_identity=%s",
+            "Detector start backend=%s result=%s model_identity=%s "
+            "request_corners=%d",
             BackendName(detectorConfig_.kind),
             detectorRunning_ ? "accepted" : "failed",
-            detectorConfig_.expectedManifestIdentity.c_str());
+            detectorConfig_.expectedManifestIdentity.c_str(),
+            detectorConfig_.requestCorners ? 1 : 0);
         return detectorRunning_;
     }
 
@@ -1361,7 +1412,15 @@ public:
                     0.05F * ageBrightness,
                     1.0F,
                 };
-                if (object->hasBox) {
+                const bool drawsSegCuboid =
+                    object->hasCornerPoseLocal &&
+                    object->cornerSizeWH[0] > 0.0F &&
+                    object->cornerSizeWH[1] > 0.0F;
+                // A detection with a solved corner plane draws its seg-plan
+                // cuboid instead of the depth-fused one: two geometries on
+                // one object read as two objects. Every other detection
+                // keeps the depth-fused box.
+                if (object->hasBox && !drawsSegCuboid) {
                     // A measured cuboid: centre, extents, and orientation all
                     // come from depth. DebugLineShape::Box is a unit cube, so
                     // the model matrix scales by the full extents.
@@ -1436,50 +1495,34 @@ public:
                         {1.0F, 1.0F, 1.0F, 1.0F},
                     });
                 }
-                // Corner-pose extension: when the service fitted a quad and
-                // its PnP pose converted to LOCAL, draw the object's plane as
-                // a rectangle plus an axes tripod at the same pose. The size
-                // is the solved object width/height in metres; the fused-box
-                // block above is untouched.
-                if (object->hasCornerPoseLocal &&
-                    object->cornerSizeWH[0] > 0.0F &&
-                    object->cornerSizeWH[1] > 0.0F) {
+                // Seg-plan cuboid: the screen plane solved from the mask
+                // (corner pose + known size) extruded backward by the
+                // display thickness. This replaces the depth-fused cuboid
+                // for this detection - one geometry per object.
+                if (drawsSegCuboid) {
+                    constexpr float kScreenThicknessMeters = 0.05F;
                     const questlab::math::Mat4 cornerPose =
                         questlab::math::Multiply(
                             questlab::math::TranslationMatrix(
                                 object->cornerPoseLocal.position),
                             questlab::math::RotationMatrix(
                                 object->cornerPoseLocal.orientation));
-                    // The screen spans object X/Y with +Z normal, matching
-                    // ScreenRectangle.
+                    // Object +Y up, +Z normal toward the viewer: the box
+                    // front face sits on the solved plane and the body
+                    // extends backward (-Z in the object frame).
                     draws->push_back({
-                        questlab::DebugLineShape::ScreenRectangle,
+                        questlab::DebugLineShape::Box,
                         questlab::math::Multiply(
-                            cornerPose,
+                            questlab::math::Multiply(
+                                cornerPose,
+                                questlab::math::TranslationMatrix(
+                                    {0.0F, 0.0F,
+                                     -kScreenThicknessMeters * 0.5F})),
                             ScaleMatrix(
                                 object->cornerSizeWH[0],
                                 object->cornerSizeWH[1],
-                                1.0F)),
+                                kScreenThicknessMeters)),
                         color,
-                    });
-                    // Axes shader is 1m long; scale it to a readable length
-                    // derived from the corner size, same pose as the quad.
-                    const float cornerAxisLength = std::clamp(
-                        std::max(
-                            object->cornerSizeWH[0],
-                            object->cornerSizeWH[1]) *
-                            0.75F,
-                        0.15F,
-                        0.50F);
-                    draws->push_back({
-                        questlab::DebugLineShape::Axes,
-                        questlab::math::Multiply(
-                            cornerPose,
-                            ScaleMatrix(
-                                cornerAxisLength,
-                                cornerAxisLength,
-                                cornerAxisLength)),
-                        {1.0F, 1.0F, 1.0F, 1.0F},
                     });
                 }
                 // No measured box means nothing is drawn. Bearing rays were
