@@ -63,21 +63,26 @@ Reason strings (exact, asserted by tests):
 Input-validation order (deterministic, exact semantics):
 
 1. `count < 6` → `"insufficient correspondences"`.
-2. any non-finite object point or pixel → `"non-finite correspondence"`.
-3. `"invalid pose input"` — null result pointer, null correspondences pointer
-   (with `count >= 6`), non-finite/non-positive fx or fy, non-finite cx or cy,
-   non-positive reprojectionThresholdPx, `maxIterations < 1`, `minInliers < 3`.
-4. `"degenerate sample geometry"` — global pre-check: fewer than 3 unique object
+2. null result pointer (nothing to clear) or null correspondences pointer
+   (with `count >= 6`) → `"invalid pose input"`; a non-null `Result` is
+   cleared here, so every false path leaves a cleared, finite result.
+3. any non-finite object point or pixel → `"non-finite correspondence"`.
+4. `"invalid pose input"` — non-finite/non-positive fx or fy, non-finite cx or
+   cy, non-positive reprojectionThresholdPx, `maxIterations < 1`,
+   `minInliers < 3`.
+5. `"degenerate sample geometry"` — global pre-check: fewer than 3 unique object
    points or all object points collinear within a scale-relative tolerance.
-5. RANSAC: no consensus ≥ `options.minInliers` → `"no consensus"`.
-6. Gauss-Newton stops at the best-so-far pose when a step is singular or
+6. `"no consensus"` — no inlier set ≥ `options.minInliers`, re-checked after
+   the final refit (a collapsed final consensus fails closed too).
+7. Gauss-Newton stops at the best-so-far pose when a step is singular or
    non-improving; `"refinement failed"` is reserved for an unusable initial
    consensus pose (a point behind the camera).
 
-The null output pointer is rejected before the output is cleared so every false
-path (when the output is non-null) leaves a cleared, finite `Result`. No NaN/Inf
-may remain in any output field on any path, false included. RANSAC also skips
-degenerate minimal samples (duplicate or collinear within the sample) internally.
+The null result pointer is rejected first; with a non-null result, the
+`Result` is cleared before any other check so every false path leaves a
+cleared, finite result. No NaN/Inf may remain in any output field on any
+path, false included. RANSAC also skips degenerate minimal samples
+(duplicate or collinear within the sample) internally.
 
 Type choice: depend on `libs/xr_math` for `Vec2/Vec3/Quat/Pose` (the repo's
 geometry vocabulary; portable, host-tested), wired via the
@@ -104,10 +109,12 @@ the quaternion ordering matches `libs/screen_corners`.
      reshape it into the 3×4 projection P. DLT resolves P only up to sign and
      scale, so (a) negate the whole 12-vector so the sampled points' camera
      depths are positive (cheirality, whole-vector flip — never rotation and
-     translation separately), (b) after denormalization scale P so its 3×3
-     rotation block's Frobenius norm is sqrt(3) (a valid rotation has that
-     norm), then (c) orthonormalize the 3×3 block (polar iteration, no SVD),
-     forcing det = +1, and use the last column as translation.
+     translation separately), (b) scale columns 0/1 of the 3×3 block — they
+     carry the metric scale λ — to unit length, (c) complete column 2 by
+     their cross product so the block is orthonormal with det = +1 by
+     construction (deviation D-4: the originally sketched Frobenius-√3
+     scaling plus polar iteration was not needed), and use the last column,
+     rescaled by the same λ, as translation.
    - Coplanar cloud: the 12-parameter DLT is degenerate for planar samples
      (the second projection column is unconstrained, so the smallest
      eigenvector is arbitrary). Project the object points once onto a PCA

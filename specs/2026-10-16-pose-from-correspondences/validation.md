@@ -95,6 +95,11 @@ group assert-aborts. Per-group red evidence (each aborts at the first assert):
   iteration at the best-so-far pose instead of failing the whole solve, which
   noisy data made reachable. `"refinement failed"` is reserved for an unusable
   initial consensus pose.
+- D-4 Non-coplanar rotation recovery: columns 0/1 of the DLT block are scaled
+  to unit length and column 2 is completed by their cross product (orthonormal,
+  det = +1 by construction) instead of the sketched Frobenius-√3 scaling plus
+  polar iteration — the exact-recovery measurements confirm the simpler
+  construction. `plan.md` item 4 records the implemented method.
 
 ## Definition of Done (integration)
 

@@ -269,16 +269,15 @@ bool SolveProjectionMatrix(const double object[kMinimalSampleSize][3],
 
 // --- Rotation recovery from the DLT projection matrix -----------------------
 
-// Resolves cheirality + metric scale on the DLT projection matrix and
-// orthonormalizes its rotation block. The whole 12-vector is negated when the
-// sampled points' camera depths are negative (never rotation and translation
-// separately). Only columns 0 and 1 of the 3x3 block are trusted and scaled:
-// for a coplanar sample the DLT leaves column 2 unconstrained (the planar
-// homography determines only columns 0, 1, 3), so column 2 is completed by the
-// cross product instead of being read directly. This single path is exact for
-// both coplanar and non-coplanar samples; column 0/1 carry the metric scale
-// (each equals lambda * a unit rotation column), giving the last column its
-// translation scale.
+// Resolves cheirality + metric scale on a non-coplanar DLT projection matrix
+// and orthonormalizes its rotation block. The whole 12-vector is negated when
+// the sampled points' camera depths are negative (never rotation and
+// translation separately). Columns 0 and 1 of the 3x3 block carry the metric
+// scale (each equals lambda * a unit rotation column): they are scaled to
+// unit length and column 2 is completed by their cross product, which
+// enforces orthonormality and det = +1 by construction and gives the last
+// column its translation scale. Coplanar samples never reach this function;
+// they take the plane-homography path (PoseFromHomography).
 bool MinimalPoseFromP(const double p[12],
                       const double object[kMinimalSampleSize][3],
                       double r[3][3],
@@ -988,6 +987,16 @@ bool SolvePose(
     if (correspondences == nullptr) {
         return fail("invalid pose input");
     }
+    for (int i = 0; i < count; ++i) {
+        const Correspondence& c = correspondences[i];
+        if (!std::isfinite(c.objectPoint.x) ||
+            !std::isfinite(c.objectPoint.y) ||
+            !std::isfinite(c.objectPoint.z) ||
+            !std::isfinite(c.pixel.x) ||
+            !std::isfinite(c.pixel.y)) {
+            return fail("non-finite correspondence");
+        }
+    }
     if (!(intrinsics.fx > 0.0F && std::isfinite(intrinsics.fx)) ||
         !(intrinsics.fy > 0.0F && std::isfinite(intrinsics.fy)) ||
         !std::isfinite(intrinsics.cx) ||
@@ -998,16 +1007,6 @@ bool SolvePose(
         options.maxIterations < 1 ||
         options.minInliers < 3) {
         return fail("invalid pose input");
-    }
-    for (int i = 0; i < count; ++i) {
-        const Correspondence& c = correspondences[i];
-        if (!std::isfinite(c.objectPoint.x) ||
-            !std::isfinite(c.objectPoint.y) ||
-            !std::isfinite(c.objectPoint.z) ||
-            !std::isfinite(c.pixel.x) ||
-            !std::isfinite(c.pixel.y)) {
-            return fail("non-finite correspondence");
-        }
     }
 
     // Precompute object points (double) and normalized image coordinates.
@@ -1191,6 +1190,12 @@ bool SolvePose(
     const double rms = finalInlierCount > 0
         ? std::sqrt(squaredErrorSum / finalInlierCount)
         : 0.0;
+
+    if (finalInlierCount < options.minInliers) {
+        // The final refit collapsed the consensus: fail closed rather than
+        // report a pose that fewer correspondences support than required.
+        return fail("no consensus");
+    }
 
     result->pose.orientation = QuatFromRotation(bestR);
     result->pose.position = math::Vec3{
