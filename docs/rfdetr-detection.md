@@ -1,10 +1,10 @@
 # RF-DETR detection in headset space
 
-App 10 is an installable native Meta Quest application. Its default backend
-runs RF-DETR Nano inside the APK with ONNX Runtime XNNPACK plus CPU fallback.
-The same APK can instead use a trusted-link host service or pinned replay
-detections; backend selection is app-private configuration written by the
-deployment script.
+App 10 is an installable native Meta Quest application. Its detector is
+Triton: the headset captures, preprocesses, and postprocesses (boxes, seg
+masks, screen quads, PnP poses), and the model tensors run on a host
+server. The headset never executes the model; the deployment script
+writes the app-private configuration.
 
 ## Deploy and run
 
@@ -39,7 +39,7 @@ The app starts with only the world-space detection geometry over passthrough;
 the flat diagnostic is hidden. B toggles the head-locked 2D diagnostic.
 Detection class, confidence, frame age, inference time, backend health,
 measured range, and drop counts are drawn into that diagnostic; detections
-served with QLD2 corners (seg contracts) are outlined by their screen quad
+served with screen corners (seg contracts) are outlined by their quad
 (TL→TR→BR→BL) instead of the axis-aligned box.
 
 World geometry is a metric 3D box fused from environment depth. A box is drawn
@@ -49,82 +49,39 @@ dimension stays legible.
 
 ## Backends
 
-On-device is the default and needs no running host process:
+Inference is host-side by design: the headset never executes the model.
+It captures, preprocesses, and runs all postprocessing (boxes, seg masks,
+screen quads, PnP poses) locally, and talks to a server for the tensors.
 
-```bash
-./scripts/build_deploy.sh \
-  --app 10-rfdetr-detection \
-  --backend ondevice
-```
-
-Direct Triton runs the model tensors on a Triton server while the app keeps
-preprocessing and all postprocessing (boxes, seg masks, screen quads, PnP
-poses) on-device:
+Direct Triton is the primary backend:
 
 ```bash
 ./tools/triton/launch_triton.sh   # host side, once
 ./scripts/build_deploy.sh \
   --app 10-rfdetr-detection \
-  --backend triton \
   --manifest tools/rfdetr_export/seg-small-manifest.json \
   --class-sizes tv:0.55,0.32
 ```
 
 See `tools/triton/README.md` for the model repository and details.
 
-For streaming, first build and start the loopback-only service:
-
-```bash
-onnxruntime_root="$(tools/rfdetr_inference/prepare_onnxruntime.sh)"
-cmake -S tools/rfdetr_inference -B build/rfdetr-inference \
-  -DQUESTLAB_ENABLE_ONNXRUNTIME=ON \
-  -DONNXRUNTIME_ROOT="$onnxruntime_root"
-cmake --build build/rfdetr-inference --parallel
-build/rfdetr-inference/rfdetr_service \
-  --manifest tools/rfdetr_export/model-manifest.json \
-  --model build/models/rfdetr/rfdetr-nano.onnx \
-  --port 48110
-```
-
-In a second terminal, deploy with:
+The deploy script pushes the manifest as the shape contract, derives the
+Triton model name from the manifest variant (`seg-small` ->
+`rfdetr_seg_small`), writes `detector.conf` (`triton_host/port/model/
+version`, `class_sizes`, `allowed_classes`, rates), and installs an
+`adb reverse` mapping for port 8000 when the Triton host is loopback.
+The manifest's ONNX SHA-256 is pinned as the expected identity; the app
+rejects a contract whose hash does not match at detector start.
+`--class-sizes label:W,H` decides which classes get a PnP pose from their
+seg mask (every masked detection still gets a quad). Example against the
+seg model:
 
 ```bash
 ./scripts/build_deploy.sh \
   --app 10-rfdetr-detection \
-  --backend streaming
-```
-
-The deploy script installs an `adb reverse` mapping for port 48110. The
-versioned handshake exchanges the 64-character model identity and refuses a
-mismatch before any pixels are sent. The service binds only to
-`127.0.0.1`; it is intentionally a trusted developer-link implementation, not
-a network-exposed production service.
-
-An explicit `--manifest` retargets the app's handshake identity to that
-manifest's ONNX SHA-256 for the deploy, so nano, medium, or seg-small
-contracts can be selected without rebuilding the APK (without the flag the
-compiled-in default applies). A segmentation manifest additionally sets
-`request_corners=1`: the app then asks for the QLD2 screen-corner extension
-(per-detection quad + PnP pose), which the service computes from seg masks
-(`--class-sizes` decides which classes get a pose). Example against a seg
-service:
-
-```bash
-./scripts/build_deploy.sh \
-  --app 10-rfdetr-detection \
-  --backend streaming \
   --manifest tools/rfdetr_export/seg-small-manifest.json \
+  --class-sizes tv:0.55,0.32 \
   --allowed-classes tv
-```
-
-Replay uses one pinned detection JSON for every submitted frame unless a
-`replay_frame_id` is configured:
-
-```bash
-./scripts/build_deploy.sh \
-  --app 10-rfdetr-detection \
-  --backend replay \
-  --replay-detections build/rfdetr-results/frame-001.json
 ```
 
 ## Runtime architecture

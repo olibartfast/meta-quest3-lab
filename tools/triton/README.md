@@ -4,11 +4,7 @@ The headset app carries its own Triton client: the APK preprocesses the
 camera frame, calls Triton over the KServe v2 HTTP protocol (binary tensor
 extension) with `libs/triton_client`, and runs postprocessing - including
 mask decoding, screen-quad extraction, and PnP pose solving - on-device
-(`libs/screen_corners`). No bridge process sits between the app and Triton.
-
-> Legacy: `tools/rfdetr_inference`'s `rfdetr_service` (the old QLD1/QLD2
-> bridge) is retired from the headset path. It remains as a host-only tool
-> for offline experiments and the pinned oracle tests.
+(`libs/screen_corners`). The model itself never runs on the headset.
 
 ## 1. Model repository
 
@@ -39,7 +35,7 @@ The deploy script pushes the model manifest (shape contract), writes the
 manifest variant (`seg-small` -> `rfdetr_seg_small`):
 
 ```bash
-./scripts/build_deploy.sh --app 10-rfdetr-detection --backend triton \
+./scripts/build_deploy.sh --app 10-rfdetr-detection \
   --manifest tools/rfdetr_export/seg-small-manifest.json \
   --class-sizes tv:0.55,0.32 \
   --allowed-classes tv
@@ -50,7 +46,7 @@ defaults to `tv:0.55,0.32`); every masked detection still gets a quad.
 Box-only manifests (nano/medium) work the same way without quads:
 
 ```bash
-./scripts/build_deploy.sh --app 10-rfdetr-detection --backend triton \
+./scripts/build_deploy.sh --app 10-rfdetr-detection \
   --manifest tools/rfdetr_export/model-manifest.json
 ```
 

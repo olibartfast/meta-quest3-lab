@@ -59,7 +59,7 @@ bool PostprocessDetectionsWithMasks(
     std::vector<Detection>* detections,
     std::string* error);
 
-// Row-major binary-mask RLE (value, run-length uint32 pairs) for the
+// Row-major binary-mask RLE (run-length, value uint32 pairs) for the
 // streaming wire format: 300 full-frame float masks are too large to
 // send per frame. Runs cap at one row so decoding needs no width.
 std::vector<uint32_t> EncodeMaskRle(

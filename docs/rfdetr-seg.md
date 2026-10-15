@@ -1,72 +1,63 @@
-# RF-DETR-Seg rollout (streaming-host-first)
+# RF-DETR-Seg
 
-Target: `RFDETRSegSmall` (384x384, Apache-2.0) served from the host
-`rfdetr_service`; the Quest keeps running the box-only on-device model
-until the seg pipeline is validated end to end.
+`RFDETRSegSmall` (384x384) serves the segmentation contract from Triton:
+the headset captures and preprocesses, the host runs the model, and the
+app decodes masks and solves screen quads and poses locally.
 
-## Why streaming first
+## Model contract
 
-The seg ONNX carries a third `masks` output per query. On-device
-XNNPACK mask decode plus full-frame mask transport is unmeasured;
-the host service can decode and RLE-compress masks before anything
-crosses `adb reverse`.
+`QUESTLAB_RFDETR_MODEL_V1` accepts variant `seg-small` with a third
+output: `masks`, float32 `[1, 100, 96, 96]`, meaning
+`per_query_instance_masks`. Box-only manifests are unchanged
+(`hasMasks == false`). Mask attach follows `rf-detr-cpp-inference`
+(`olibartfast/rf-detr-cpp-inference`, `postprocess_segmentation_outputs`):
+the kept detection's query slice is nearest-neighbour upsampled to source
+pixels, and `logit > 0.0` on the raw logits keeps the pixel.
 
-## Contract (landed)
+Nearest-neighbour upsampling is deliberate: interpolating logits would
+invent soft edges that the threshold then turns into arbitrary boundary
+decisions. With nearest sampling every output pixel's decision comes from
+a real model logit, at the cost of a 13.3 px grid step at 1280 wide.
 
-`QUESTLAB_RFDETR_MODEL_V1` accepts variant `seg-small` with an
-optional third output: `masks`, float32 `[1, 300, H, W]`,
-meaning `per_query_instance_masks`. Box-only manifests are unchanged
-(`hasMasks == false`). Mask attach follows
-`rf-detr-cpp-inference` (`olibartfast/rf-detr-cpp-inference`,
-`postprocess_segmentation_outputs`): the kept detection's query slice
-is nearest-neighbour upsampled to source pixels, logit > threshold
-(0.0 on raw logits) keeps the pixel.
+## Mask compression
 
-## Wire format (landed)
+`EncodeMaskRle` / `DecodeMaskRle` in `postprocessing.h` compress binary
+masks as per-row `(runLength, value)` pairs. Row restarting keeps a
+truncated tail to one row instead of desynchronizing the whole mask;
+decoding needs no width knowledge to resynchronize rows. The encoder and
+decoder are exercised together in the test suite so the two ends cannot
+drift.
 
-`EncodeMaskRle` / `DecodeMaskRle` in `postprocessing.h`: per-row
-`(runLength, value)` pairs. Row restart keeps a truncated tail to one
-row. Service/client transport of RLE masks is the next slice.
+## Corners from masks
 
-## Corners from masks (landed)
+`libs/screen_corners` (OpenCV-free):
 
-`FindScreenQuadFromMask` (`tools/monitor_corners`): largest mask
-contour -> `approxPolyDP` -> convexity + display-aspect gates ->
-TL/TR/BR/BL order -> `SolveQuadPose` (AP3P + reprojection gate).
-No `cornerSubPix`: a binary mask has no gradients, pixel vertices are
-the measurement. Score is quad share of mask foreground
-(rectangularity). Refusals carry reasons; empty masks fail closed.
-Host-verified on a synthetic tilted screen: corners < 3 px,
-sub-pixel reprojection, empty-mask refusal.
+- largest 8-connected component of the mask,
+- Moore boundary tracing, then Douglas-Peucker at 2% of the perimeter,
+- exactly four points, convex, bbox >= 32 px, aspect in 1.1-2.6,
+- TL/TR/BR/BL ordering,
+- planar P4P from the object-plane homography (`K^-1 H = s [r1 r2 t]`,
+  orthonormalized, front-facing branch) with reprojection RMS.
 
-## Headset rendering (landed)
+There is no subpixel refinement: a binary mask has no gradients, so pixel
+vertices are the measurement. The score is the quad share of the mask
+foreground (rectangularity); refusals carry reasons and empty masks fail
+closed. Verified on synthetic tilted quads (corners < 3 px, sub-pixel
+reprojection on exact data) and end-to-end from a rasterized mask.
 
-App 10 draws the served corner pose for any class: `ScreenRectangle`
-face outline (W×H in the object XY plane) + `Axes` tripod at the
-`LOCAL` pose, converted on the worker with the detection_projection
-camera→LOCAL convention. Stale scenes draw nothing extra; the
-depth-fused box path is untouched. With the Triton backend the quad and
-pose are computed on-device from the mask output (`libs/screen_corners`),
-with poses gated by `--class-sizes`; the legacy streaming path keeps the
-`request_corners=1` opt-in. The 2D diagnostic preview also outlines the
-quad (TL→TR→BR→BL) in place of the axis-aligned box for detections that
-carry corners.
+## Headset rendering
 
-## Remaining slices
+A detection with a solved plane draws a cuboid built from the seg plan:
+the front face sits on the solved screen plane and the body extrudes
+backward by a display thickness (5 cm), replacing the depth-fused cuboid
+for that detection. The 2D diagnostic preview outlines the quad
+(TL to TR to BR to BL) in place of the axis-aligned box. Poses are solved
+for the classes listed in `class_sizes` (default `tv:0.55,0.32`); every
+masked detection still gets a quad.
 
-1. ~~Pin the seg-small checkpoint and extend `export_model.py`~~ done:
-   `rfdetr-seg-small` (100 queries, masks 96×96, SHA pinned in
-   `tools/rfdetr_export/seg-small-manifest.json`).
-2. ~~Service RLE wire~~ superseded: service serves QLD2 quads + poses
-   from seg masks; per-class planar sizes via `--class-sizes`
-   (pose only for listed classes, quad for all).
-3. Deploy validation on headset (`--backend triton` + seg manifest
-   + `--class-sizes tv:0.55,0.32`), thermal + accuracy acceptance.
-4. On-device seg only after host validation and latency budget.
+## Open work
 
-## Triton execution (landed)
-
-The app is the Triton client: `libs/triton_client` speaks KServe v2 HTTP
-from inside the APK and `libs/screen_corners` extracts quads and solves
-poses on-device, so `--backend triton --manifest seg-small-manifest.json`
-needs no host service at all. See `tools/triton/README.md`.
+1. Deploy validation on the headset (seg manifest + `--class-sizes` for
+   the actual panel), thermal and accuracy acceptance.
+2. Panel-specific size/aspect tuning: reprojection RMS in the tens of
+   pixels means the quad's shape does not match the `class_sizes` prior.
