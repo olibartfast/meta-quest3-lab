@@ -18,6 +18,18 @@ if(NOT TARGET rfdetr_inference_core)
         ${CMAKE_CURRENT_BINARY_DIR}/rfdetr_inference
     )
 endif()
+if(NOT TARGET triton_client)
+    add_subdirectory(
+        ${CMAKE_CURRENT_LIST_DIR}/../triton_client
+        ${CMAKE_CURRENT_BINARY_DIR}/triton_client
+    )
+endif()
+if(NOT TARGET screen_corners)
+    add_subdirectory(
+        ${CMAKE_CURRENT_LIST_DIR}/../screen_corners
+        ${CMAKE_CURRENT_BINARY_DIR}/screen_corners
+    )
+endif()
 
 find_package(Threads REQUIRED)
 add_library(object_detector STATIC
@@ -30,7 +42,8 @@ target_compile_features(object_detector PUBLIC cxx_std_17)
 target_include_directories(object_detector PUBLIC include)
 target_link_libraries(object_detector
     PUBLIC camera_source
-    PRIVATE rfdetr_inference_core Threads::Threads
+    PRIVATE rfdetr_inference_core triton_client screen_corners
+            Threads::Threads
 )
 target_compile_options(object_detector PRIVATE
     -Wall

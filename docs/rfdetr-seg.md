@@ -45,7 +45,12 @@ App 10 draws the served corner pose for any class: `ScreenRectangle`
 face outline (W×H in the object XY plane) + `Axes` tripod at the
 `LOCAL` pose, converted on the worker with the detection_projection
 camera→LOCAL convention. Stale scenes draw nothing extra; the
-depth-fused box path is untouched.
+depth-fused box path is untouched. With the Triton backend the quad and
+pose are computed on-device from the mask output (`libs/screen_corners`),
+with poses gated by `--class-sizes`; the legacy streaming path keeps the
+`request_corners=1` opt-in. The 2D diagnostic preview also outlines the
+quad (TL→TR→BR→BL) in place of the axis-aligned box for detections that
+carry corners.
 
 ## Remaining slices
 
@@ -55,6 +60,13 @@ depth-fused box path is untouched.
 2. ~~Service RLE wire~~ superseded: service serves QLD2 quads + poses
    from seg masks; per-class planar sizes via `--class-sizes`
    (pose only for listed classes, quad for all).
-3. Deploy validation on headset (`--backend streaming` + seg service
-   + `--allowed-classes`), thermal + accuracy acceptance.
+3. Deploy validation on headset (`--backend triton` + seg manifest
+   + `--class-sizes tv:0.55,0.32`), thermal + accuracy acceptance.
 4. On-device seg only after host validation and latency budget.
+
+## Triton execution (landed)
+
+The app is the Triton client: `libs/triton_client` speaks KServe v2 HTTP
+from inside the APK and `libs/screen_corners` extracts quads and solves
+poses on-device, so `--backend triton --manifest seg-small-manifest.json`
+needs no host service at all. See `tools/triton/README.md`.

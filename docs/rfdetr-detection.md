@@ -38,7 +38,9 @@ adb logcat -s RFDetrDetection:V QuestCamera:V OpenXR:V '*:S'
 The app starts with only the world-space detection geometry over passthrough;
 the flat diagnostic is hidden. B toggles the head-locked 2D diagnostic.
 Detection class, confidence, frame age, inference time, backend health,
-measured range, and drop counts are drawn into that diagnostic.
+measured range, and drop counts are drawn into that diagnostic; detections
+served with QLD2 corners (seg contracts) are outlined by their screen quad
+(TL→TR→BR→BL) instead of the axis-aligned box.
 
 World geometry is a metric 3D box fused from environment depth. A box is drawn
 only when depth supported a metric fit; otherwise nothing is drawn. Boxes whose
@@ -54,6 +56,21 @@ On-device is the default and needs no running host process:
   --app 10-rfdetr-detection \
   --backend ondevice
 ```
+
+Direct Triton runs the model tensors on a Triton server while the app keeps
+preprocessing and all postprocessing (boxes, seg masks, screen quads, PnP
+poses) on-device:
+
+```bash
+./tools/triton/launch_triton.sh   # host side, once
+./scripts/build_deploy.sh \
+  --app 10-rfdetr-detection \
+  --backend triton \
+  --manifest tools/rfdetr_export/seg-small-manifest.json \
+  --class-sizes tv:0.55,0.32
+```
+
+See `tools/triton/README.md` for the model repository and details.
 
 For streaming, first build and start the loopback-only service:
 
@@ -82,6 +99,23 @@ versioned handshake exchanges the 64-character model identity and refuses a
 mismatch before any pixels are sent. The service binds only to
 `127.0.0.1`; it is intentionally a trusted developer-link implementation, not
 a network-exposed production service.
+
+An explicit `--manifest` retargets the app's handshake identity to that
+manifest's ONNX SHA-256 for the deploy, so nano, medium, or seg-small
+contracts can be selected without rebuilding the APK (without the flag the
+compiled-in default applies). A segmentation manifest additionally sets
+`request_corners=1`: the app then asks for the QLD2 screen-corner extension
+(per-detection quad + PnP pose), which the service computes from seg masks
+(`--class-sizes` decides which classes get a pose). Example against a seg
+service:
+
+```bash
+./scripts/build_deploy.sh \
+  --app 10-rfdetr-detection \
+  --backend streaming \
+  --manifest tools/rfdetr_export/seg-small-manifest.json \
+  --allowed-classes tv
+```
 
 Replay uses one pinned detection JSON for every submitted frame unless a
 `replay_frame_id` is configured:

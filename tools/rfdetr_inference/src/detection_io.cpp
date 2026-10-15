@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -148,6 +149,46 @@ void DrawText(
     }
 }
 
+void DrawLine(
+    std::vector<uint8_t>* pixels,
+    int32_t width,
+    int32_t height,
+    int32_t x0,
+    int32_t y0,
+    int32_t x1,
+    int32_t y1,
+    size_t channelCount,
+    const std::array<uint8_t, 3>& color) {
+    const int32_t deltaX = std::abs(x1 - x0);
+    const int32_t deltaY = std::abs(y1 - y0);
+    const int32_t steps = std::max(deltaX, deltaY);
+    if (steps == 0) {
+        for (int32_t offset = 0; offset < 2; ++offset) {
+            SetPixel(
+                pixels, width, height, x0 + offset, y0, channelCount, color);
+            SetPixel(
+                pixels, width, height, x0, y0 + offset, channelCount, color);
+        }
+        return;
+    }
+    for (int32_t step = 0; step <= steps; ++step) {
+        const int32_t x = x0 + (x1 - x0) * step / steps;
+        const int32_t y = y0 + (y1 - y0) * step / steps;
+        for (int32_t thicknessY = 0; thicknessY < 2; ++thicknessY) {
+            for (int32_t thicknessX = 0; thicknessX < 2; ++thicknessX) {
+                SetPixel(
+                    pixels,
+                    width,
+                    height,
+                    x + thicknessX,
+                    y + thicknessY,
+                    channelCount,
+                    color);
+            }
+        }
+    }
+}
+
 void DrawDetection(
     std::vector<uint8_t>* pixels,
     int32_t width,
@@ -155,38 +196,73 @@ void DrawDetection(
     const Detection& detection,
     size_t channelCount,
     const std::array<uint8_t, 3>& color) {
-    const int32_t x0 = std::clamp(
-        static_cast<int32_t>(std::lround(detection.boxXyxy[0])), 0, width - 1);
-    const int32_t y0 = std::clamp(
-        static_cast<int32_t>(std::lround(detection.boxXyxy[1])), 0, height - 1);
-    const int32_t x1 = std::clamp(
-        static_cast<int32_t>(std::lround(detection.boxXyxy[2])), 0, width - 1);
-    const int32_t y1 = std::clamp(
-        static_cast<int32_t>(std::lround(detection.boxXyxy[3])), 0, height - 1);
-    for (int32_t thickness = 0; thickness < 2; ++thickness) {
-        for (int32_t x = x0; x <= x1; ++x) {
-            SetPixel(
-                pixels, width, height, x, y0 + thickness, channelCount, color);
-            SetPixel(
-                pixels, width, height, x, y1 - thickness, channelCount, color);
+    const auto clampX = [width](float value) {
+        return std::clamp(
+            static_cast<int32_t>(std::lround(value)), 0, width - 1);
+    };
+    const auto clampY = [height](float value) {
+        return std::clamp(
+            static_cast<int32_t>(std::lround(value)), 0, height - 1);
+    };
+    int32_t labelX = 0;
+    int32_t labelY = 0;
+    if (detection.hasCorners) {
+        // QLD2 quad (TL, TR, BR, BL in source pixels): outline the served
+        // screen corners instead of the axis-aligned detection box.
+        int32_t quadX[4];
+        int32_t quadY[4];
+        for (size_t corner = 0; corner < 4U; ++corner) {
+            quadX[corner] = clampX(detection.cornerXy[corner * 2U]);
+            quadY[corner] = clampY(detection.cornerXy[corner * 2U + 1U]);
         }
-        for (int32_t y = y0; y <= y1; ++y) {
-            SetPixel(
-                pixels, width, height, x0 + thickness, y, channelCount, color);
-            SetPixel(
-                pixels, width, height, x1 - thickness, y, channelCount, color);
+        for (size_t corner = 0; corner < 4U; ++corner) {
+            const size_t next = (corner + 1U) % 4U;
+            DrawLine(
+                pixels,
+                width,
+                height,
+                quadX[corner],
+                quadY[corner],
+                quadX[next],
+                quadY[next],
+                channelCount,
+                color);
         }
+        labelX = quadX[0];
+        labelY = quadY[0];
+    } else {
+        const int32_t x0 = clampX(detection.boxXyxy[0]);
+        const int32_t y0 = clampY(detection.boxXyxy[1]);
+        const int32_t x1 = clampX(detection.boxXyxy[2]);
+        const int32_t y1 = clampY(detection.boxXyxy[3]);
+        for (int32_t thickness = 0; thickness < 2; ++thickness) {
+            for (int32_t x = x0; x <= x1; ++x) {
+                SetPixel(
+                    pixels, width, height, x, y0 + thickness, channelCount, color);
+                SetPixel(
+                    pixels, width, height, x, y1 - thickness, channelCount, color);
+            }
+            for (int32_t y = y0; y <= y1; ++y) {
+                SetPixel(
+                    pixels, width, height, x0 + thickness, y, channelCount, color);
+                SetPixel(
+                    pixels, width, height, x1 - thickness, y, channelCount, color);
+            }
+        }
+        labelX = x0;
+        labelY = y0;
     }
     std::ostringstream label;
     label << detection.className << ' '
           << static_cast<int>(std::lround(detection.confidence * 100.0F));
-    const int32_t labelY = y0 >= 9 ? y0 - 9 : std::min(y0 + 3, height - 7);
+    const int32_t labelOriginY =
+        labelY >= 9 ? labelY - 9 : std::min(labelY + 3, height - 7);
     DrawText(
         pixels,
         width,
         height,
-        x0,
-        labelY,
+        labelX,
+        labelOriginY,
         label.str(),
         channelCount,
         color);
