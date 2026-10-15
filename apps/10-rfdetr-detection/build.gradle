@@ -7,9 +7,6 @@ def validationEnabled =
         .orElse("false")
         .get()
         .toBoolean()
-def onnxRuntimeRoot = file(
-    "${rootProject.projectDir}/build/dependencies/onnxruntime-android-1.21.0"
-)
 
 android {
     // Reuse the proven Milestone 9 Camera2 activity and permission bridge.
@@ -34,8 +31,6 @@ android {
             cmake {
                 arguments(
                     "-DANDROID_STL=c++_static",
-                    "-DONNXRUNTIME_ROOT=${onnxRuntimeRoot.absolutePath}",
-                    "-DQUESTLAB_ENABLE_ONNXRUNTIME=ON",
                     "-DQUEST_ENABLE_VULKAN_VALIDATION=" +
                         (validationEnabled ? "ON" : "OFF")
                 )
@@ -52,7 +47,6 @@ android {
     sourceSets {
         main {
             java.srcDirs = ["../09-quest-camera/src/main/java"]
-            jniLibs.srcDirs = ["${onnxRuntimeRoot.absolutePath}/jni"]
         }
     }
 

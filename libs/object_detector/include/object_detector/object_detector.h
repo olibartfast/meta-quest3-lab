@@ -11,12 +11,10 @@
 
 namespace questlab::detection {
 
-enum class ObjectDetectorKind {
-    OnDeviceOnnxRuntime,
-    Streaming,
-    Triton,
-    Replay,
-};
+// The app has exactly one detector backend: inference runs on a host
+// server (Triton, KServe v2 over HTTP). The headset captures,
+// preprocesses, postprocesses (boxes, masks, screen quads, poses), and
+// renders; it never executes the model.
 
 enum class DetectorHealth {
     Stopped,
@@ -28,34 +26,21 @@ enum class DetectorHealth {
 };
 
 struct DetectorConfig {
-    ObjectDetectorKind kind = ObjectDetectorKind::OnDeviceOnnxRuntime;
-    std::string modelPath;
     std::string manifestPath;
-    // Contract identity: on-device it must match the loaded manifest's
-    // ONNX SHA-256; streaming sends it in the handshake. detector.conf
-    // "model_identity" (deploy script, from --manifest) overrides the
-    // app's compiled-in default so the target contract can switch
-    // (nano/medium/seg-small) without rebuilding the APK.
+    // The loaded manifest's ONNX SHA-256: when set, the manifest is only
+    // accepted if its hash matches. detector.conf "model_identity"
+    // (deploy script, from --manifest) overrides the app's compiled-in
+    // default so the target contract can switch (nano/medium/seg-small)
+    // without rebuilding the APK.
     std::string expectedManifestIdentity;
-    std::string serviceHost = "127.0.0.1";
-    uint16_t servicePort = 48110;
     float maximumSubmissionsPerSecond = 2.0F;
     int64_t resultExpiryNanoseconds = 1'500'000'000;
-    int32_t xnnpackThreads = 4;
-    std::string replayDetectionsPath;
-    uint64_t replayFrameId = 0;
     // Comma-separated detector label allowlist (e.g. "tv"). Empty means
     // every class is processed. App-level filter: the detector still runs
     // full COCO, but only listed labels reach projection/fusion/rendering.
     std::string allowedClassesCsv;
-    // Ask the streaming service for screen-corner quads + PnP poses
-    // (QLD2 protocol). Needs a corners-capable service; off by default so
-    // old services keep working. detector.conf "request_corners" (written
-    // by the deploy script for seg manifests) turns it on.
-    bool requestCorners = false;
-    // Direct Triton (KServe v2 HTTP) backend: the app preprocesses and
-    // postprocesses locally and only the model tensors run on the server.
-    // No bridge process: detector.conf triton_host/triton_port/triton_model.
+    // Triton (KServe v2 HTTP): the app preprocesses and postprocesses
+    // locally and only the model tensors run on the server.
     std::string tritonHost = "127.0.0.1";
     uint16_t tritonPort = 8000;
     std::string tritonModel;
@@ -71,7 +56,6 @@ struct DetectorConfig {
 };
 
 struct DetectorCapabilities {
-    ObjectDetectorKind kind = ObjectDetectorKind::OnDeviceOnnxRuntime;
     std::string backendName;
     bool asynchronous = true;
     bool newestFrameOnly = true;
@@ -85,8 +69,8 @@ struct Detection {
     std::array<float, 4> boxXyxy{};
     // Screen-corner extension: quad in source pixels (TL, TR, BR, BL)
     // plus the pose in the capture camera frame (+X right, +Y down, +Z
-    // forward) with its reprojection RMS. Filled locally for Triton seg
-    // contracts, or served by a QLD2 streaming service.
+    // forward) with its reprojection RMS. Solved locally for seg
+    // contracts (libs/screen_corners).
     bool hasCorners = false;
     std::array<float, 8> cornerXy{};
     bool hasCornerPose = false;
@@ -114,7 +98,6 @@ struct DetectorStats {
     uint64_t completedFrames = 0;
     uint64_t replacedPendingFrames = 0;
     uint64_t rateLimitedFrames = 0;
-    uint64_t unknownReplayFrames = 0;
     uint64_t inferenceFailures = 0;
     uint64_t currentQueueDepth = 0;
     uint64_t queueHighWaterMark = 0;
