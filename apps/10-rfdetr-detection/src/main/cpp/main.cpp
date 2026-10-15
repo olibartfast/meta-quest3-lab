@@ -144,11 +144,8 @@ std::string Trim(std::string value) {
 questlab::detection::DetectorConfig LoadDetectorConfig(
     const std::filesystem::path& privateDirectory) {
     questlab::detection::DetectorConfig config;
-    config.modelPath = (privateDirectory / "rfdetr-nano.onnx").string();
     config.manifestPath = (privateDirectory / "model-manifest.json").string();
     config.expectedManifestIdentity = kModelIdentity;
-    config.replayDetectionsPath =
-        (privateDirectory / "replay-detections.json").string();
 
     const std::filesystem::path configPath =
         privateDirectory / "detector.conf";
@@ -162,25 +159,7 @@ questlab::detection::DetectorConfig LoadDetectorConfig(
         const std::string key = Trim(line.substr(0, separator));
         const std::string value = Trim(line.substr(separator + 1U));
         try {
-            if (key == "backend") {
-                if (value == "streaming") {
-                    config.kind =
-                        questlab::detection::ObjectDetectorKind::Streaming;
-                } else if (value == "triton") {
-                    config.kind =
-                        questlab::detection::ObjectDetectorKind::Triton;
-                } else if (value == "replay") {
-                    config.kind =
-                        questlab::detection::ObjectDetectorKind::Replay;
-                } else {
-                    config.kind = questlab::detection::
-                        ObjectDetectorKind::OnDeviceOnnxRuntime;
-                }
-            } else if (key == "service_host") {
-                config.serviceHost = value;
-            } else if (key == "service_port") {
-                config.servicePort = static_cast<uint16_t>(std::stoul(value));
-            } else if (key == "triton_host") {
+            if (key == "triton_host") {
                 config.tritonHost = value;
             } else if (key == "triton_port") {
                 config.tritonPort = static_cast<uint16_t>(std::stoul(value));
@@ -221,12 +200,6 @@ questlab::detection::DetectorConfig LoadDetectorConfig(
             } else if (key == "expiry_ms") {
                 config.resultExpiryNanoseconds =
                     static_cast<int64_t>(std::stoll(value)) * 1'000'000;
-            } else if (key == "xnnpack_threads") {
-                config.xnnpackThreads = std::stoi(value);
-            } else if (key == "replay_frame_id") {
-                config.replayFrameId = std::stoull(value);
-            } else if (key == "request_corners") {
-                config.requestCorners = std::stoi(value) != 0;
             } else if (key == "model_identity") {
                 if (value.size() != 64U) {
                     throw std::invalid_argument(
@@ -256,17 +229,6 @@ const char* HealthName(questlab::detection::DetectorHealth health) {
         case DetectorHealth::Disconnected: return "DISCONNECTED";
         case DetectorHealth::Unsupported: return "UNSUPPORTED";
         case DetectorHealth::Error: return "ERROR";
-    }
-    return "UNKNOWN";
-}
-
-const char* BackendName(questlab::detection::ObjectDetectorKind kind) {
-    using questlab::detection::ObjectDetectorKind;
-    switch (kind) {
-        case ObjectDetectorKind::OnDeviceOnnxRuntime: return "ONDEVICE";
-        case ObjectDetectorKind::Streaming: return "STREAMING";
-        case ObjectDetectorKind::Triton: return "TRITON";
-        case ObjectDetectorKind::Replay: return "REPLAY";
     }
     return "UNKNOWN";
 }
@@ -308,9 +270,9 @@ struct FrameImage {
 struct PreparedObject {
     questlab::detection::Detection detection;
     questlab::projection::DetectionProjection projection;
-    // Corner-pose extension (QLD2 services). The PnP pose arrives in the
+    // Corner-pose extension (seg contracts). The PnP pose arrives in the
     // capture camera frame and is converted to LOCAL on the worker; it stays
-    // absent when the service fitted no quad or the transform rejected it.
+    // absent when no quad was fitted or the transform rejected it.
     bool hasCornerPoseLocal = false;
     questlab::math::Pose cornerPoseLocal{};
     std::array<float, 2> cornerSizeWH{{0.0F, 0.0F}};
@@ -957,8 +919,7 @@ private:
             (now - record->arrivalNanoseconds) / 1'000'000;
         std::vector<std::string> statusLines;
         statusLines.push_back(
-            std::string("BACKEND ") + BackendName(config_.kind) + " " +
-            HealthName(stats.health));
+            std::string("BACKEND triton ") + HealthName(stats.health));
         {
             size_t boxed = 0;
             for (const PreparedObject& object : prepared->objects) {
@@ -1233,12 +1194,9 @@ public:
         }
         detectorRunning_ = pipeline_.Start(detectorConfig_);
         questlab::LogInfo(
-            "Detector start backend=%s result=%s model_identity=%s "
-            "request_corners=%d",
-            BackendName(detectorConfig_.kind),
+            "Detector start backend=triton result=%s model_identity=%s",
             detectorRunning_ ? "accepted" : "failed",
-            detectorConfig_.expectedManifestIdentity.c_str(),
-            detectorConfig_.requestCorners ? 1 : 0);
+            detectorConfig_.expectedManifestIdentity.c_str());
         return detectorRunning_;
     }
 
@@ -1588,7 +1546,7 @@ private:
             "submitted=%llu completed=%llu pending_drop=%llu rate_drop=%llu "
             "dispatch_drop=%llu unmatched=%llu expired=%llu projection_fail=%llu "
             "error=%s",
-            BackendName(detectorConfig_.kind),
+            "triton",
             HealthName(stats.health),
             preparedValid ? "visible" : "none",
             static_cast<unsigned long long>(snapshot.fusedBoxes),
@@ -1874,8 +1832,7 @@ void android_main(android_app* app) {
     const questlab::detection::DetectorConfig detectorConfig =
         LoadDetectorConfig(privateDirectory);
     questlab::LogInfo(
-        "RF-DETR detection starting backend=%s private_dir=%s",
-        BackendName(detectorConfig.kind),
+        "RF-DETR detection starting backend=triton private_dir=%s",
         privateDirectory.c_str());
     questlab::LogInfo(
         "Fusion orient=surface-6D (plane normal + in-plane axis, no PnP)");

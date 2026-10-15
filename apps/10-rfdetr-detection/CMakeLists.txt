@@ -5,12 +5,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-if(NOT ONNXRUNTIME_ROOT)
-    message(FATAL_ERROR
-        "Run tools/rfdetr_inference/prepare_onnxruntime_android.sh first"
-    )
-endif()
-
 find_package(OpenXR REQUIRED CONFIG)
 add_subdirectory(
     ../../libs/xr_core

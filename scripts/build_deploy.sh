@@ -8,13 +8,9 @@ repo_root="$(cd "$script_dir/.." && pwd)"
 source "$script_dir/toolchain_config.sh"
 
 app=""
-backend="ondevice"
-model_path="$repo_root/build/models/rfdetr/rfdetr-nano.onnx"
 manifest_path="$repo_root/tools/rfdetr_export/model-manifest.json"
 manifest_explicit=false
-service_host="127.0.0.1"
-service_port="48110"
-replay_detections=""
+triton_host="127.0.0.1"
 allowed_classes=""
 triton_model=""
 class_sizes=""
@@ -36,22 +32,6 @@ while [[ $# -gt 0 ]]; do
             build_only=true
             shift
             ;;
-        --backend)
-            if [[ $# -lt 2 ]]; then
-                echo "--backend requires a value" >&2
-                exit 2
-            fi
-            backend="$2"
-            shift 2
-            ;;
-        --model)
-            if [[ $# -lt 2 ]]; then
-                echo "--model requires a value" >&2
-                exit 2
-            fi
-            model_path="$2"
-            shift 2
-            ;;
         --manifest)
             if [[ $# -lt 2 ]]; then
                 echo "--manifest requires a value" >&2
@@ -59,22 +39,6 @@ while [[ $# -gt 0 ]]; do
             fi
             manifest_path="$2"
             manifest_explicit=true
-            shift 2
-            ;;
-        --service-host)
-            if [[ $# -lt 2 ]]; then
-                echo "--service-host requires a value" >&2
-                exit 2
-            fi
-            service_host="$2"
-            shift 2
-            ;;
-        --service-port)
-            if [[ $# -lt 2 ]]; then
-                echo "--service-port requires a value" >&2
-                exit 2
-            fi
-            service_port="$2"
             shift 2
             ;;
         --allowed-classes)
@@ -93,20 +57,20 @@ while [[ $# -gt 0 ]]; do
             triton_model="$2"
             shift 2
             ;;
+        --triton-host)
+            if [[ $# -lt 2 ]]; then
+                echo "--triton-host requires a value" >&2
+                exit 2
+            fi
+            triton_host="$2"
+            shift 2
+            ;;
         --class-sizes)
             if [[ $# -lt 2 ]]; then
                 echo "--class-sizes requires a value" >&2
                 exit 2
             fi
             class_sizes="$2"
-            shift 2
-            ;;	
-        --replay-detections)
-            if [[ $# -lt 2 ]]; then
-                echo "--replay-detections requires a value" >&2
-                exit 2
-            fi
-            replay_detections="$2"
             shift 2
             ;;
         --vulkan-validation)
@@ -127,7 +91,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown argument: $1" >&2
-            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|triton|replay}] [--triton-model NAME] [--class-sizes label:W,H[;...]] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
+            echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--triton-model NAME] [--triton-host HOST] [--class-sizes label:W,H[;...]] [--manifest PATH] [--allowed-classes IDS]" >&2
             exit 2
             ;;
     esac
@@ -135,7 +99,7 @@ done
 
 if [[ -z "$app" ]]; then
     echo "Select an application with --app." >&2
-    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--backend {ondevice|streaming|triton|replay}] [--triton-model NAME] [--class-sizes label:W,H[;...]] [--model PATH] [--manifest PATH] [--service-host HOST] [--service-port PORT] [--replay-detections PATH] [--allowed-classes IDS]" >&2
+    echo "Usage: $0 --app {01-openxr-bootstrap|02-vulkan-stereo-triangle|03-head-pose|04-controller-input|05-passthrough|06-spatial-object|07-hand-tracking|08-spatial-anchors|09-quest-camera|10-rfdetr-detection|16-stereo-probe|xrpassthrough} [--variant {debug|benchmark|operator}] [--build-only] [--vulkan-validation] [--perfetto-tracing] [--triton-model NAME] [--triton-host HOST] [--class-sizes label:W,H[;...]] [--manifest PATH] [--allowed-classes IDS]" >&2
     exit 2
 fi
 
@@ -284,7 +248,6 @@ case "$app" in
         log_tag="QuestCamera"
         ;;
     10-rfdetr-detection)
-        "$repo_root/tools/rfdetr_inference/prepare_onnxruntime_android.sh"
         build_command=(
             "$repo_root/gradlew"
             ":apps:10-rfdetr-detection:assemble${gradle_variant}"
@@ -397,151 +360,67 @@ if [[ "$app" == "16-stereo-probe" ]]; then
 fi
 
 if [[ "$app" == "10-rfdetr-detection" ]]; then
-    case "$backend" in
-        ondevice|streaming|triton|replay)
-            ;;
-        *)
-            echo "Unknown detector backend: $backend" >&2
-            echo "Available backends: ondevice, streaming, triton, replay" >&2
-            exit 2
-            ;;
-    esac
+    # The app has exactly one detector backend: Triton. Inference is
+    # host-side; the headset pushes the manifest as the shape contract.
     adb shell pm grant "$application_id" android.permission.CAMERA
     adb shell pm grant \
         "$application_id" horizonos.permission.HEADSET_CAMERA
     adb shell run-as "$application_id" mkdir -p files
     submission_hz="2"
-    # Hold the last fused scene across the streaming period: submit (2 Hz)
+    # Hold the last fused scene across the inference period: submit (2 Hz)
     # + inference + jitter routinely exceeds a second, and clearing to
     # nothing between results reads as flicker. Boxes still fade with age
     # and a valid empty result clears them immediately.
     expiry_ms="5000"
-    if [[ "$backend" == "ondevice" ]]; then
-        # RF-DETR Nano is substantially slower on mobile CPU than the trusted
-        # link. Keep the queue sparse and retain the exact frame long enough
-        # for a first unoptimized XNNPACK/CPU result to remain visible.
-        submission_hz="0.25"
-        expiry_ms="20000"
+    if [[ ! -f "$manifest_path" ]]; then
+        echo "Detection requires the model manifest: $manifest_path" >&2
+        exit 1
     fi
-    # Deploying an explicit manifest retargets the app's pinned contract
-    # identity to that manifest (streaming handshake / on-device check);
-    # on-device always pushes its manifest, and the Triton backend always
-    # pushes it (the app decodes tensors from its shapes). A seg manifest
-    # also turns on the QLD2 corner request for the legacy streaming path.
-    derive_identity=false
-    if [[ "$backend" == "ondevice" || "$backend" == "triton" ||
-          ( "$backend" == "streaming" && "$manifest_explicit" == true ) ]]; then
-        derive_identity=true
-    fi
-    model_identity=""
-    request_corners=""
-    if [[ "$derive_identity" == true && -f "$manifest_path" ]]; then
-        model_identity="$(
-            grep -o '"sha256": "[0-9a-f]\{64\}"' "$manifest_path" |
+    # The manifest identity (ONNX SHA-256) is pinned into detector.conf;
+    # the app rejects the contract when the hash does not match.
+    model_identity="$(
+        grep -o '"sha256": "[0-9a-f]\{64\}"' "$manifest_path" |
+            head -n 1 |
+            sed 's/.*"sha256": "//; s/"$//'
+    )"
+    if [[ -z "$triton_model" ]]; then
+        model_variant="$(
+            grep -o '"variant": "[^"]*"' "$manifest_path" |
                 head -n 1 |
-                sed 's/.*"sha256": "//; s/"$//'
+                sed 's/.*"variant": "//; s/"$//'
         )"
-        if [[ "$backend" == "streaming" ]]; then
-            if grep -q '"masks"' "$manifest_path"; then
-                request_corners="1"
-            else
-                request_corners="0"
-            fi
+        if [[ -n "$model_variant" ]]; then
+            triton_model="rfdetr_${model_variant//-/_}"
         fi
     fi
-    if [[ "$backend" == "triton" ]]; then
-        if [[ ! -f "$manifest_path" ]]; then
-            echo "Triton backend requires the model manifest: $manifest_path" >&2
-            exit 1
-        fi
-        if [[ -z "$triton_model" ]]; then
-            model_variant="$(
-                grep -o '"variant": "[^"]*"' "$manifest_path" |
-                    head -n 1 |
-                    sed 's/.*"variant": "//; s/"$//'
-            )"
-            if [[ -n "$model_variant" ]]; then
-                triton_model="rfdetr_${model_variant//-/_}"
-            fi
-        fi
-        if [[ -z "$triton_model" ]]; then
-            echo "Cannot derive the Triton model name; pass --triton-model." >&2
-            exit 1
-        fi
+    if [[ -z "$triton_model" ]]; then
+        echo "Cannot derive the Triton model name; pass --triton-model." >&2
+        exit 1
     fi
     conf_lines=(
-        "backend=$backend"
-        "service_host=$service_host"
-        "service_port=$service_port"
         "submission_hz=$submission_hz"
         "expiry_ms=$expiry_ms"
         "allowed_classes=$allowed_classes"
-        "xnnpack_threads=4"
+        "triton_host=$triton_host"
+        "triton_port=8000"
+        "triton_model=$triton_model"
+        "triton_version=1"
     )
-    if [[ "$backend" == "triton" ]]; then
-        conf_lines+=(
-            "triton_host=$service_host"
-            "triton_port=8000"
-            "triton_model=$triton_model"
-            "triton_version=1"
-        )
-        if [[ -n "$class_sizes" ]]; then
-            conf_lines+=("class_sizes=$class_sizes")
-        fi
+    if [[ -n "$class_sizes" ]]; then
+        conf_lines+=("class_sizes=$class_sizes")
     fi
     if [[ -n "$model_identity" ]]; then
         conf_lines+=("model_identity=$model_identity")
-    fi
-    if [[ -n "$request_corners" ]]; then
-        conf_lines+=("request_corners=$request_corners")
     fi
     printf '%s\n' "${conf_lines[@]}" | \
         adb exec-in \
             "run-as $application_id sh -c 'cat > files/detector.conf'"
 
-    if [[ "$backend" == "ondevice" ]]; then
-        if [[ ! -f "$model_path" || ! -f "$manifest_path" ]]; then
-            echo "On-device backend requires the exported model and manifest." >&2
-            echo "Model:    $model_path" >&2
-            echo "Manifest: $manifest_path" >&2
-            exit 1
-        fi
-        expected_model_sha256="$(
-            sha256sum "$model_path" | awk '{print $1}'
-        )"
-        adb exec-in \
-            "run-as $application_id sh -c 'cat > files/rfdetr-nano.onnx'" \
-            < "$model_path"
-        adb exec-in \
-            "run-as $application_id sh -c 'cat > files/model-manifest.json'" \
-            < "$manifest_path"
-        installed_model_sha256="$(
-            adb shell run-as "$application_id" \
-                sha256sum files/rfdetr-nano.onnx | awk '{print $1}'
-        )"
-        if [[ "$installed_model_sha256" != "$expected_model_sha256" ]]; then
-            echo "Device model checksum verification failed." >&2
-            exit 1
-        fi
-        echo "Provisioned on-device model SHA-256: $installed_model_sha256"
-    elif [[ "$backend" == "streaming" &&
-            "$service_host" == "127.0.0.1" ]]; then
-        adb reverse "tcp:$service_port" "tcp:$service_port"
-    elif [[ "$backend" == "triton" ]]; then
-        adb exec-in \
-            "run-as $application_id sh -c 'cat > files/model-manifest.json'" \
-            < "$manifest_path"
-        if [[ "$service_host" == "127.0.0.1" ]]; then
-            adb reverse tcp:8000 tcp:8000
-        fi
-    elif [[ "$backend" == "replay" ]]; then
-        if [[ ! -f "$replay_detections" ]]; then
-            echo "Replay backend requires --replay-detections PATH." >&2
-            exit 1
-        fi
-        adb exec-in \
-            "run-as $application_id sh -c 'cat > files/replay-detections.json'" \
-            < "$replay_detections"
+    adb exec-in \
+        "run-as $application_id sh -c 'cat > files/model-manifest.json'" \
+        < "$manifest_path"
+    if [[ "$triton_host" == "127.0.0.1" ]]; then
+        adb reverse tcp:8000 tcp:8000
     fi
 fi
 

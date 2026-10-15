@@ -160,36 +160,6 @@ if(QUESTLAB_RFDETR_BUILD_TOOL)
         -Wextra
         -Wpedantic
     )
-    if(UNIX)
-        # monitor_corners is host-only and needs OpenCV; the bridge
-        # service (rfdetr_service) exists only where OpenCV is available.
-        # Android device builds (QUESTLAB_RFDETR_BUILD_TOOL=OFF) and host
-        # CI builds without OpenCV configure the library and tests only.
-        if(NOT TARGET monitor_corners)
-            find_package(OpenCV QUIET COMPONENTS core imgproc calib3d)
-            if(OpenCV_FOUND)
-                add_subdirectory(
-                    ${CMAKE_CURRENT_LIST_DIR}/../monitor_corners
-                    ${CMAKE_CURRENT_BINARY_DIR}/monitor_corners
-                )
-            endif()
-        endif()
-        if(TARGET monitor_corners)
-            add_executable(rfdetr_service src/service_main.cpp)
-            target_link_libraries(rfdetr_service PRIVATE
-                rfdetr_inference_core
-                monitor_corners
-            )
-            target_compile_options(rfdetr_service PRIVATE
-                -Wall
-                -Wextra
-                -Wpedantic
-            )
-        else()
-            message(STATUS
-                "OpenCV not found: skipping the rfdetr_service bridge")
-        endif()
-    endif()
 endif()
 
 if(BUILD_TESTING)

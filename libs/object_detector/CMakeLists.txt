@@ -54,6 +54,9 @@ target_compile_options(object_detector PRIVATE
 if(BUILD_TESTING AND CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_executable(object_detector_tests tests/object_detector_tests.cpp)
     target_link_libraries(object_detector_tests PRIVATE object_detector)
+    target_compile_definitions(object_detector_tests PRIVATE
+        QUESTLAB_SEG_MANIFEST_PATH="${CMAKE_CURRENT_LIST_DIR}/../../tools/rfdetr_export/seg-small-manifest.json"
+    )
     target_compile_options(object_detector_tests PRIVATE
         -Wall
         -Wextra
