@@ -28,6 +28,17 @@ is nearest-neighbour upsampled to source pixels, logit > threshold
 `(runLength, value)` pairs. Row restart keeps a truncated tail to one
 row. Service/client transport of RLE masks is the next slice.
 
+## Corners from masks (landed)
+
+`FindScreenQuadFromMask` (`tools/monitor_corners`): largest mask
+contour -> `approxPolyDP` -> convexity + display-aspect gates ->
+TL/TR/BR/BL order -> `SolveQuadPose` (AP3P + reprojection gate).
+No `cornerSubPix`: a binary mask has no gradients, pixel vertices are
+the measurement. Score is quad share of mask foreground
+(rectangularity). Refusals carry reasons; empty masks fail closed.
+Host-verified on a synthetic tilted screen: corners < 3 px,
+sub-pixel reprojection, empty-mask refusal.
+
 ## Remaining slices
 
 1. Pin the seg-small checkpoint and extend `export_model.py`

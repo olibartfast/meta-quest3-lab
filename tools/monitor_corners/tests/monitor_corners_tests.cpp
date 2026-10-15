@@ -141,6 +141,34 @@ int main() {
             "synthetic translation error must be under 2%");
     }
 
+    // Seg-mask path: a binary mask of the same projection must yield the
+    // same quad with no RGB edges involved.
+    cv::Mat segMask(kHeight, kWidth, CV_8UC1, cv::Scalar(0));
+    cv::fillConvexPoly(segMask, polygon, cv::Scalar(255));
+    questlab::corners::Quad maskQuad{};
+    Expect(
+        questlab::corners::FindScreenQuadFromMask(
+            segMask.data, kWidth, kHeight, &maskQuad, &error),
+        error.empty() ? "synthetic mask must yield a quad" : error.c_str());
+    Expect(
+        CornerError(maskQuad, projected) < 3.0F,
+        "mask corners must match projection within 3 px");
+    Expect(
+        maskQuad.score > 0.90F,
+        "a clean mask quad must score near rectangular");
+    {
+        questlab::corners::Pose maskPose{};
+        float maskReprojection = -1.0F;
+        Expect(
+            questlab::corners::SolveQuadPose(
+                maskQuad, intrinsics, kScreenW, kScreenH, &maskPose,
+                &maskReprojection, &error),
+            error.empty() ? "mask pose must solve" : error.c_str());
+        Expect(
+            maskReprojection >= 0.0F && maskReprojection < 1.0F,
+            "mask reprojection must be sub-pixel");
+    }
+
     // Blank wall: refusal with a reason, never a hallucinated screen.
     cv::Mat blank(kHeight, kWidth, CV_8UC3, cv::Scalar(40, 40, 40));
     questlab::corners::Quad none{};
@@ -149,6 +177,15 @@ int main() {
             blank.data, kWidth, kHeight, &none, &error),
         "a blank wall must not produce a quad");
     Expect(!error.empty(), "a refusal must carry a reason");
+
+    // Empty mask: refusal with a reason, same contract as the RGB path.
+    cv::Mat emptyMask(kHeight, kWidth, CV_8UC1, cv::Scalar(0));
+    questlab::corners::Quad emptyQuad{};
+    Expect(
+        !questlab::corners::FindScreenQuadFromMask(
+            emptyMask.data, kWidth, kHeight, &emptyQuad, &error),
+        "an empty mask must not produce a quad");
+    Expect(!error.empty(), "a mask refusal must carry a reason");
 
     if (failures == 0) {
         std::puts("monitor corners tests passed");

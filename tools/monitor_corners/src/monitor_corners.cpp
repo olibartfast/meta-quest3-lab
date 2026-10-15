@@ -140,6 +140,78 @@ bool FindScreenQuad(
     return true;
 }
 
+bool FindScreenQuadFromMask(
+    const uint8_t* mask,
+    int width,
+    int height,
+    Quad* quad,
+    std::string* error) {
+    const auto fail = [&](const char* message) {
+        if (error != nullptr) {
+            *error = message;
+        }
+        return false;
+    };
+    if (mask == nullptr || quad == nullptr || width < 64 || height < 64) {
+        return fail("invalid mask or output");
+    }
+    const cv::Mat binary(
+        height, width, CV_8UC1, const_cast<uint8_t*>(mask));
+    cv::Mat foreground;
+    cv::threshold(binary, foreground, 0, 255, cv::THRESH_BINARY);
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(
+        foreground, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    const double imageArea =
+        static_cast<double>(width) * static_cast<double>(height);
+    const double foregroundArea = cv::countNonZero(foreground);
+    if (foregroundArea < 0.005 * imageArea ||
+        foregroundArea > 0.80 * imageArea) {
+        return fail("mask foreground outside plausible screen share");
+    }
+    double bestArea = 0.0;
+    std::vector<cv::Point> best;
+    for (const auto& contour : contours) {
+        const double area = cv::contourArea(contour);
+        if (area > bestArea) {
+            bestArea = area;
+            best = contour;
+        }
+    }
+    if (best.empty()) {
+        return fail("no mask contour");
+    }
+    std::vector<cv::Point> approx;
+    cv::approxPolyDP(
+        best, approx, 0.02 * cv::arcLength(best, true), true);
+    if (approx.size() != 4 || !cv::isContourConvex(approx)) {
+        return fail("mask contour is not quadrilateral");
+    }
+    const cv::Rect bounds = cv::boundingRect(approx);
+    if (bounds.width < 32 || bounds.height < 32) {
+        return fail("mask quad below minimum size");
+    }
+    const double aspect = static_cast<double>(bounds.width) /
+        static_cast<double>(bounds.height);
+    if (aspect < 1.1 || aspect > 2.6) {
+        return fail("mask quad outside display aspect window");
+    }
+    std::vector<cv::Point2f> ordered;
+    for (const auto& point : approx) {
+        ordered.emplace_back(
+            static_cast<float>(point.x), static_cast<float>(point.y));
+    }
+    if (!OrderCorners(&ordered)) {
+        return fail("corner ordering failed");
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        quad->corners[i] = {ordered[i].x, ordered[i].y};
+    }
+    quad->score = static_cast<float>(
+        bestArea / (foregroundArea > 0.0 ? foregroundArea : 1.0));
+    return true;
+}
+
 bool SolveQuadPose(
     const Quad& quad,
     const Intrinsics& intrinsics,
