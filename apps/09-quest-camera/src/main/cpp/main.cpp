@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -638,6 +639,15 @@ void android_main(android_app* app) {
         gCamera.reset();
     }
     camera->Stop();
+    // Drain in-flight pins so the adapter is destroyed here on the native
+    // thread, not on a Java camera thread: destruction must never run
+    // where it could call back into Java or join against its caller.
+    // Bounded (200 ms): a stuck callback still frees the adapter itself
+    // via its own pin. Concurrent OnFrame vs Stop is safe: the frame
+    // queue is internally mutex-guarded and stats take the adapter mutex.
+    for (int spins = 0; spins < 100 && camera.use_count() > 1; ++spins) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     if (!androidState.destroyRequested && !app->destroyRequested) {
         ANativeActivity_finish(app->activity);
     }

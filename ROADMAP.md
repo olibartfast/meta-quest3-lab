@@ -430,7 +430,9 @@ orientation convention.
 
 **Status:** Implemented with host tests and an Android debug build; Quest 3/3S
 permission, visual, lifecycle, long-run, private-fixture, and replay
-acceptance remain pending.
+acceptance remain pending. The JNI callback lifetime hardening
+(`shared_ptr` camera pin, null guards, exception checks, 2026-10-16) is on
+disk; device acceptance of it is pending with the rest.
 
 ## Goal
 
@@ -509,6 +511,20 @@ marked as a display convention. This absorbs the mechanism of Milestones 12 and
 14 into app 10. **It does not discharge them:** neither the depth accuracy of
 Milestone 12 nor the IoU, centre, extent, and jitter measurements of Milestone
 14 have been taken on a headset.
+
+A seg-plan screen pose path is also on disk: masked detections get a quad
+from `libs/screen_corners` and, for `class_sizes` classes, a planar P4P pose
+hardened 2026-10-16 (Shepperd quaternion, undistortion before PnP,
+bisector-symmetric orthonormalization, facing/grazing refusal, a shared
+absolute-plus-diagonal-relative gate, worker-side similarity rescale of
+position and size to the fused axial range with a throttled mismatch log).
+Its cuboid is tinted cyan as a pure prior, hybrid green-cyan once
+depth-rescaled (range/size measured, orientation mask-derived), and
+replaces the depth box for that detection. Ordered open work, in
+`docs/rfdetr-seg.md`: subpixel isoline corners first (quantization dominates
+and the gate cannot catch it), then IPPE two-fold disambiguation, then
+ray-plane metric corners to drop the size prior, then temporal filtering.
+Headset accuracy acceptance for all of it is pending.
 
 ## Tasks
 
