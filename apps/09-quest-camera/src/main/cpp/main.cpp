@@ -525,7 +525,7 @@ void android_main(android_app* app) {
         app->activity->vm,
         app->activity->clazz,
     };
-    std::unique_ptr<questlab::camera::IRgbCameraSource> camera =
+    std::shared_ptr<questlab::camera::IRgbCameraSource> camera =
         questlab::camera::CreateCameraSource(
             cameraConfig, cameraPlatform);
     auto* metaCamera = dynamic_cast<
