@@ -74,15 +74,22 @@ round-trip, border/portrait gates, and end-to-end from a rasterized mask.
 A detection with a gated plane draws a cuboid built from the seg plan:
 the front face sits on the solved screen plane and the body extrudes
 backward by a display thickness (5 cm), replacing the depth-fused cuboid
-for that detection. Orientation and extents stay prior-driven, so the
-cuboid is tinted cyan as a prior, never the measured green; on the worker
-(not the 72 Hz render loop) the corner range is compared against the fused
-depth range, and on disagreement beyond 0.15 m + 15% the corner position
-is rescaled along the camera ray to the measured range with a throttled
-`SEG_SCALE_MISMATCH` warning. The 2D diagnostic preview outlines the quad
-(TL to TR to BR to BL) in place of the axis-aligned box. Poses are solved
-for the classes listed in `class_sizes` (default `tv:0.55,0.32`); every
-masked detection still gets a quad.
+for that detection. The PnP pose is invariant under a similarity about the
+camera centre, so on the worker (not the 72 Hz render loop) the corner
+position and the drawn size are both scaled by one factor,
+fused-axial-range / corner-axial-range, whenever fused depth exists: the
+silhouette still matches the mask while range and size become
+depth-measured. Axial-vs-axial (representativeRangeMeters is axial) avoids
+a cos(theta) bias against wide or off-centre quads. Rescaling is
+unconditional when depth exists — a warn threshold would jump on depth
+noise — and the threshold (0.15 m + 15%) gates only a throttled
+`SEG_SCALE_MISMATCH` log that also reports the derived W×H. Pure-prior
+cuboids (no depth box) stay cyan; depth-rescaled ones get a hybrid
+green-cyan: range and size measured, orientation still mask-derived, so
+neither prior cyan nor measured green. The 2D diagnostic preview outlines
+the quad (TL to TR to BR to BL) in place of the axis-aligned box. Poses
+are solved for the classes listed in `class_sizes` (default
+`tv:0.55,0.32`); every masked detection still gets a quad.
 
 ## Open work
 

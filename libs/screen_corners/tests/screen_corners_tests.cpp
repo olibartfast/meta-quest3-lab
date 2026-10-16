@@ -602,7 +602,8 @@ void TestSymmetricOrthonormalize() {
         first, parallel, axisX, axisY, axisZ));
 }
 
-void TestBorderQuadRejected() {    std::vector<uint8_t> mask = MakeMask();
+void TestBorderQuadRejected() {
+    std::vector<uint8_t> mask = MakeMask();
     FillRect(&mask, 0, 80, 299, 199);  // touches the left border
     Quad quad;
     std::string error;

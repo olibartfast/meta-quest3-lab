@@ -166,6 +166,13 @@ textured non-coplanar object.
   `specs/2026-10-16-pose-from-correspondences/`, `libs/pose_solver`): metric
   6-DoF from 2D↔3D correspondences, RANSAC to 50% outliers, deterministic,
   fail-closed, host CTest plus CI step "Test pose solver geometry".
+- Phase 9a2 — seg-plan screen pose: solver hardening **done** (2026-10-16,
+  `libs/screen_corners`, `docs/rfdetr-seg.md`): Shepperd quaternion,
+  undistortion before PnP, bisector-symmetric orthonormalization,
+  facing/grazing refusal, shared absolute-plus-diagonal-relative gate,
+  worker-side rescale to fused depth. Ordered open work: subpixel isoline
+  corners first, then IPPE disambiguation, then ray-plane metric corners,
+  then temporal filtering; headset accuracy acceptance pending.
 - Phase 9b — matcher probe: a keypoint/matcher model on the host against a
   scanned or rendered template of one textured object, producing 2D↔3D
   correspondences into `libs/pose_solver`; measure pose error at 1/2/3 m.

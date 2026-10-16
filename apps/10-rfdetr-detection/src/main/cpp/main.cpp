@@ -299,6 +299,10 @@ struct PreparedObject {
     bool hasCornerPoseLocal = false;
     questlab::math::Pose cornerPoseLocal{};
     std::array<float, 2> cornerSizeWH{{0.0F, 0.0F}};
+    // True when the worker rescaled the corner pose and size to the fused
+    // depth range: range and size are then depth-measured, orientation
+    // still mask-derived (hybrid tint, neither prior cyan nor green).
+    bool cornerRescaledToDepth = false;
     // Present only when depth supported a metric fit. A detection without a
     // box is rendered as nothing rather than as a guess.
     bool hasBox = false;
@@ -752,7 +756,9 @@ private:
             // Gated on the shared corner-pose gate (absolute + diagonal-
             // relative reprojection, rectangularity): tens of pixels mean
             // the quad is not this class size, so the pose is refused,
-            // not drawn.
+            // not drawn. Re-checked here even though the detector already
+            // gates: detections can also arrive over the wire from other
+            // producers.
             questlab::corners::Quad detectedQuad;
             for (size_t corner = 0; corner < 4U; ++corner) {
                 detectedQuad.corners[corner] = {
@@ -925,12 +931,18 @@ private:
                     detection.className.c_str(),
                     boxReason.c_str());
             }
-            // Scale-mismatch reconcile (worker, not the 72 Hz render loop):
-            // the corner range is purely the class-size prior. When fused
-            // depth clearly disagrees, rescale the corner position along
-            // the camera ray to the measured range so the drawn cuboid is
-            // not shown at a range already known to be wrong. Orientation
-            // and extents stay prior-driven (cyan tint at draw time).
+            // Scale reconcile (worker, not the 72 Hz render loop): the PnP
+            // range is purely the class-size prior. The pose is invariant
+            // under a similarity about the camera centre, so whenever
+            // fused depth exists the corner position AND the drawn size
+            // are both scaled by the same factor: the silhouette then
+            // still matches the mask while range and size become
+            // depth-measured (orientation stays mask-derived, hence the
+            // hybrid tint at draw time, not measured green).
+            // Axial-vs-axial: representativeRangeMeters is axial
+            // (Dot(offset, centerDir)), so the corner range is axial too;
+            // a Euclidean norm would inject ~cos(theta) against wide or
+            // off-centre quads.
             if (object.hasCornerPoseLocal && object.hasBox) {
                 const questlab::math::Vec3 offset{
                     object.cornerPoseLocal.position.x -
@@ -940,32 +952,40 @@ private:
                     object.cornerPoseLocal.position.z -
                         projected.originInLocal.z,
                 };
-                const float cornerRange = std::sqrt(
-                    offset.x * offset.x + offset.y * offset.y +
-                    offset.z * offset.z);
+                const float cornerAxial = questlab::math::Dot(
+                    offset, projected.centerDirectionInLocal);
                 const float fusedRange =
                     object.box.representativeRangeMeters;
-                if (std::isfinite(cornerRange) &&
-                    std::isfinite(fusedRange) && cornerRange > 1e-6F &&
-                    fusedRange > 0.0F &&
-                    std::abs(cornerRange - fusedRange) >
-                        0.15F + 0.15F * std::abs(fusedRange)) {
-                    const float rescale = fusedRange / cornerRange;
+                if (std::isfinite(cornerAxial) && cornerAxial > 1e-6F &&
+                    std::isfinite(fusedRange) && fusedRange > 0.0F) {
+                    // Always rescale when depth exists: near the warn
+                    // threshold a hard switch would jump frame to frame on
+                    // depth noise. The threshold below only gates the log.
+                    const float rescale = fusedRange / cornerAxial;
                     object.cornerPoseLocal.position = {
                         projected.originInLocal.x + offset.x * rescale,
                         projected.originInLocal.y + offset.y * rescale,
                         projected.originInLocal.z + offset.z * rescale,
                     };
-                    if (now - lastSegMismatchLogNanoseconds_ >=
-                        5'000'000'000LL) {
+                    object.cornerSizeWH = {
+                        object.cornerSizeWH[0] * rescale,
+                        object.cornerSizeWH[1] * rescale,
+                    };
+                    object.cornerRescaledToDepth = true;
+                    if (std::abs(cornerAxial - fusedRange) >
+                            0.15F + 0.15F * std::abs(fusedRange) &&
+                        now - lastSegMismatchLogNanoseconds_ >=
+                            5'000'000'000LL) {
                         lastSegMismatchLogNanoseconds_ = now;
                         questlab::LogWarning(
                             "SEG_SCALE_MISMATCH class=%s "
-                            "corner_range=%.2fm fused_range=%.2fm "
-                            "reproj=%.2fpx: rescaled corner pose to depth",
+                            "corner_axial=%.2fm fused_range=%.2fm "
+                            "derived_wh=%.2fx%.2f reproj=%.2fpx",
                             detection.className.c_str(),
-                            cornerRange,
+                            cornerAxial,
                             fusedRange,
+                            object.cornerSizeWH[0],
+                            object.cornerSizeWH[1],
                             detection.cornerReprojectionPixels);
                     }
                 }
@@ -1542,17 +1562,27 @@ public:
                 // by the display thickness. This replaces the depth-fused
                 // cuboid for this detection - one geometry per object.
                 // Range is reconciled with fused depth on the worker
-                // (rescaled along the camera ray on mismatch, throttled
-                // SEG_SCALE_MISMATCH log there); the cuboid stays cyan as
-                // a prior, never the measured green.
+                // (position and size rescaled by one similarity factor,
+                // throttled SEG_SCALE_MISMATCH log there). Pure-prior
+                // cuboids stay cyan; depth-rescaled ones get a hybrid
+                // green-cyan: range and size measured, orientation still
+                // mask-derived, so neither prior cyan nor measured green.
                 if (drawsSegCuboid) {
                     constexpr float kScreenThicknessMeters = 0.05F;
-                    const std::array<float, 4> segColor = {
-                        0.25F * ageBrightness,
-                        0.85F * ageBrightness,
-                        1.0F * ageBrightness,
-                        1.0F,
-                    };
+                    const std::array<float, 4> segColor =
+                        object->cornerRescaledToDepth
+                            ? std::array<float, 4>{
+                                  0.35F * ageBrightness,
+                                  1.00F * ageBrightness,
+                                  0.60F * ageBrightness,
+                                  1.0F,
+                              }
+                            : std::array<float, 4>{
+                                  0.25F * ageBrightness,
+                                  0.85F * ageBrightness,
+                                  1.00F * ageBrightness,
+                                  1.0F,
+                              };
                     const questlab::math::Mat4 cornerPose =
                         questlab::math::Multiply(
                             questlab::math::TranslationMatrix(
@@ -2115,6 +2145,15 @@ void android_main(android_app* app) {
         gCamera.reset();
     }
     camera->Stop();
+    // Drain in-flight pins so the adapter is destroyed here on the native
+    // thread, not on a Java camera thread: destruction must never run
+    // where it could call back into Java or join against its caller.
+    // Bounded (200 ms): a stuck callback still frees the adapter itself
+    // via its own pin. Concurrent OnFrame vs Stop is safe: the frame
+    // queue is internally mutex-guarded and stats take the adapter mutex.
+    for (int spins = 0; spins < 100 && camera.use_count() > 1; ++spins) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
     scene.Shutdown();
     if (!androidState.destroyRequested && !app->destroyRequested) {
         ANativeActivity_finish(app->activity);
