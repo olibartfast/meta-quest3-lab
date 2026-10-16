@@ -368,6 +368,7 @@ protected:
                         detection.mask.data(), detection.maskWidth,
                         detection.maskHeight, &quad, &cornerError)) {
                     converted.hasCorners = true;
+                    converted.cornerScore = quad.score;
                     for (size_t corner = 0; corner < 4U; ++corner) {
                         converted.cornerXy[corner * 2U] =
                             quad.corners[corner].x;
@@ -381,18 +382,17 @@ protected:
                         // homography fits exactly, so RMS measures K^-1 H vs
                         // scaled-rotation (aspect mismatch + corner noise).
                         // Tens of pixels mean the quad is not this class size.
-                        constexpr float kMaxCornerReprojectionPixels = 8.0F;
-                        constexpr float kMinimumQuadRectangularity = 0.70F;
+                        // Single shared gate (absolute + diagonal-relative +
+                        // rectangularity) so the worker and render path agree.
                         questlab::corners::Pose pose;
                         float reprojection = -1.0F;
                         std::string poseError;
-                        if (quad.score >= kMinimumQuadRectangularity &&
-                            questlab::corners::SolveQuadPose(
+                        if (questlab::corners::SolveQuadPose(
                                 quad, intrinsics, known->second[0],
                                 known->second[1], &pose, &reprojection,
                                 &poseError) &&
-                            reprojection >= 0.0F &&
-                            reprojection <= kMaxCornerReprojectionPixels) {
+                            questlab::corners::IsCornerPoseReliable(
+                                quad, reprojection)) {
                             converted.hasCornerPose = true;
                             converted.cornerQuatXyzw = pose.quat;
                             converted.cornerPosition = pose.position;

@@ -205,9 +205,11 @@ bool PostprocessDetectionsWithMasks(
             // Half-pixel-centred nearest-neighbour upsample of this query's
             // mask grid to source pixels; a logit above threshold keeps the
             // pixel. Same convention as rf-detr-cpp-inference's
-            // resize_threshold_mask at threshold 0.0 on raw logits, mapped
-            // through pixel centres (u = (g + 0.5) * W/gw - 0.5) so the old
-            // floor map's systematic half-cell shift is gone.
+            // resize_threshold_mask at threshold 0.0 on raw logits: each
+            // source pixel samples the cell its centre falls in
+            // (u = (g + 0.5) * W/gw - 0.5). The old floor map was off by
+            // half a source pixel (~0.04 of a cell), not half a cell; the
+            // 13.3 px quantization itself is unchanged.
             const int64_t gridH = contract.maskHeight;
             const int64_t gridW = contract.maskWidth;
             const size_t gridStep =

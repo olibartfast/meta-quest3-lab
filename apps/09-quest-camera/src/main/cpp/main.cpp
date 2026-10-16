@@ -18,12 +18,35 @@
 #include <chrono>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace {
 
-std::atomic<questlab::camera::MetaCamera2Adapter*> gCameraAdapter{nullptr};
+// Shared ownership for JNI callbacks: a raw pointer only narrowed the race
+// (a callback that loaded it just before shutdown could still run inside
+// adapter->OnFrame while android_main destroys the camera). android_main
+// publishes the camera here; every callback pins it through LockCamera()
+// for the whole call, so a late frame hits a live (stopped) adapter.
+std::mutex gCameraMutex;
+std::shared_ptr<questlab::camera::IRgbCameraSource> gCamera;
+
+// Holds shared ownership of the camera source for one JNI callback, so a
+// frame arriving during shutdown runs against a live adapter (already
+// stopped, hence dropping) instead of freed memory.
+std::shared_ptr<questlab::camera::IRgbCameraSource> LockCamera() {
+    std::lock_guard<std::mutex> lock(gCameraMutex);
+    return gCamera;
+}
+
+questlab::camera::MetaCamera2Adapter* LockAdapter(
+    const std::shared_ptr<questlab::camera::IRgbCameraSource>& camera) {
+    if (camera == nullptr) {
+        return nullptr;
+    }
+    return dynamic_cast<questlab::camera::MetaCamera2Adapter*>(camera.get());
+}
 std::atomic<uint64_t> gFrameId{1};
 
 struct AndroidState {
@@ -49,12 +72,23 @@ std::vector<uint8_t> CopyByteArray(JNIEnv* environment, jbyteArray array) {
         return {};
     }
     const jsize length = environment->GetArrayLength(array);
+    if (environment->ExceptionCheck() != JNI_FALSE) {
+        environment->ExceptionClear();
+        return {};
+    }
+    if (length <= 0) {
+        return {};
+    }
     std::vector<uint8_t> result(static_cast<size_t>(length));
     environment->GetByteArrayRegion(
         array,
         0,
         length,
         reinterpret_cast<jbyte*>(result.data()));
+    if (environment->ExceptionCheck() != JNI_FALSE) {
+        environment->ExceptionClear();
+        return {};
+    }
     return result;
 }
 
@@ -63,9 +97,20 @@ std::vector<float> CopyFloatArray(JNIEnv* environment, jfloatArray array) {
         return {};
     }
     const jsize length = environment->GetArrayLength(array);
+    if (environment->ExceptionCheck() != JNI_FALSE) {
+        environment->ExceptionClear();
+        return {};
+    }
+    if (length <= 0) {
+        return {};
+    }
     std::vector<float> result(static_cast<size_t>(length));
     environment->GetFloatArrayRegion(
         array, 0, length, result.data());
+    if (environment->ExceptionCheck() != JNI_FALSE) {
+        environment->ExceptionClear();
+        return {};
+    }
     return result;
 }
 
@@ -281,12 +326,19 @@ void HandleAppCommand(android_app* app, int32_t command) {
 
 }  // namespace
 
+// JNI bridge for com.olibartfast.questlab.questcamera.QuestCameraActivity.
+// Expected Java signatures (javap -s): (Z)V,
+// (Ljava/lang/String;III[F[F[F[F)V, (JIII[BII[BII[BII)V,
+// (Ljava/lang/String;)V, (Ljava/lang/String;J)V. Static mangled names, no
+// RegisterNatives: a Java signature edit surfaces as UnsatisfiedLinkError
+// at first call, so keep this comment in sync with the Java declarations.
 extern "C" JNIEXPORT void JNICALL
 Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnPermissionState(
     JNIEnv*,
     jobject,
     jboolean granted) {
-    if (auto* adapter = gCameraAdapter.load()) {
+    const auto camera = LockCamera();
+    if (auto* adapter = LockAdapter(camera)) {
         adapter->SetPermissionState(granted == JNI_TRUE);
         questlab::LogInfo(
             "Camera permission: %s",
@@ -306,14 +358,17 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraConf
     jfloatArray distortion,
     jfloatArray rotation,
     jfloatArray translation) {
-    auto* adapter = gCameraAdapter.load();
+    const auto camera = LockCamera();
+    auto* adapter = LockAdapter(camera);
     if (adapter == nullptr) {
         return;
     }
     questlab::camera::CameraCapabilities capabilities;
     capabilities.sourceName = "Meta Camera2 passthrough";
-    const char* cameraIdChars =
-        environment->GetStringUTFChars(cameraId, nullptr);
+    const char* cameraIdChars = nullptr;
+    if (cameraId != nullptr) {
+        cameraIdChars = environment->GetStringUTFChars(cameraId, nullptr);
+    }
     if (cameraIdChars != nullptr) {
         capabilities.cameraId = cameraIdChars;
         environment->ReleaseStringUTFChars(cameraId, cameraIdChars);
@@ -381,7 +436,8 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraFram
     jbyteArray v,
     jint vRowStride,
     jint vPixelStride) {
-    auto* adapter = gCameraAdapter.load();
+    const auto camera = LockCamera();
+    auto* adapter = LockAdapter(camera);
     if (adapter == nullptr) {
         return;
     }
@@ -419,14 +475,17 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraErro
     JNIEnv* environment,
     jobject,
     jstring message) {
-    const char* messageChars =
-        environment->GetStringUTFChars(message, nullptr);
+    const char* messageChars = nullptr;
+    if (message != nullptr) {
+        messageChars = environment->GetStringUTFChars(message, nullptr);
+    }
     const std::string error =
         messageChars != nullptr ? messageChars : "Unknown Camera2 error";
     if (messageChars != nullptr) {
         environment->ReleaseStringUTFChars(message, messageChars);
     }
-    if (auto* adapter = gCameraAdapter.load()) {
+    const auto camera = LockCamera();
+    if (auto* adapter = LockAdapter(camera)) {
         adapter->OnError(error);
     }
     questlab::LogError("%s", error.c_str());
@@ -438,8 +497,10 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCaptureSav
     jobject,
     jstring path,
     jlong byteCount) {
-    const char* pathChars =
-        environment->GetStringUTFChars(path, nullptr);
+    const char* pathChars = nullptr;
+    if (path != nullptr) {
+        pathChars = environment->GetStringUTFChars(path, nullptr);
+    }
     questlab::LogInfo(
         "Private camera capture saved: path=%s bytes=%lld",
         pathChars != nullptr ? pathChars : "unknown",
@@ -474,7 +535,13 @@ void android_main(android_app* app) {
         ANativeActivity_finish(app->activity);
         return;
     }
-    gCameraAdapter.store(metaCamera);
+    // Publish for the JNI callbacks. They receive a frame only if this is
+    // set: without it every nativeOnCameraFrame returns early and the
+    // detector never sees a capture.
+    {
+        std::lock_guard<std::mutex> lock(gCameraMutex);
+        gCamera = camera;
+    }
     CameraScene scene(camera.get());
     questlab::XrInstanceContext xrInstance;
     questlab::VulkanSessionBinding vulkanBinding;
@@ -563,7 +630,13 @@ void android_main(android_app* app) {
         }
     }
 
-    gCameraAdapter.store(nullptr);
+    {
+        // Withdraw before Stop(): callbacks already holding a pin finish
+        // against the live adapter (which drops stopped frames) instead of
+        // freeing it under their feet.
+        std::lock_guard<std::mutex> lock(gCameraMutex);
+        gCamera.reset();
+    }
     camera->Stop();
     if (!androidState.destroyRequested && !app->destroyRequested) {
         ANativeActivity_finish(app->activity);

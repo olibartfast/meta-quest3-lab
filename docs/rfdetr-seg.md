@@ -45,16 +45,22 @@ drift.
   rotation fits exactly, so it flipped upright poses 180 deg),
 - planar P4P from the object-plane homography in undistorted normalized
   coordinates (`H = s [r1 r2 t]`, K = I after Brown-Conrady + skew
-  inversion, symmetric orthonormalization, front-facing branch) with
-  reprojection RMS through the full distort+K model,
+  inversion, bisector-symmetric orthonormalization, front-facing branch)
+  with reprojection RMS through the full distort+K model,
 - Shepperd quaternion branches (the screen sits at trace = -1, w ~= 0
   nominal); any future smoothing/slerp must hemisphere-check
   (`if dot(q, q_prev) < 0: q = -q`) since the sign flips frame to frame,
-- facing/grazing refusal: the plane normal must face the camera.
+- facing/grazing refusal: the plane normal must face the camera and not
+  be edge-on. This catches mirrored pairings, not the planar two-fold
+  (IPPE) flip: both IPPE solutions face the camera, so that ambiguity
+  stays open (see roadmap).
 
-Poses are solved only when the quad rectangularity score >= 0.70 and the
-reprojection RMS <= 8 px; tens of pixels mean the quad is not this class
-size, so the pose is refused, not drawn.
+Poses pass the single shared gate (`IsCornerPoseReliable`: rectangularity
+>= 0.70, absolute RMS <= 8 px, relative RMS <= 3% of the quad diagonal);
+tens of pixels mean the quad is not this class size, so the pose is
+refused, not drawn. The gate is necessary but not sufficient: with 4
+points much of the corner noise is absorbed into a wrong pose that still
+reprojects well, so subpixel corners are the real fix.
 
 There is no subpixel refinement yet: a binary mask has no gradients, so
 pixel vertices are the measurement. The score is the quad share of the mask
@@ -68,22 +74,26 @@ round-trip, border/portrait gates, and end-to-end from a rasterized mask.
 A detection with a gated plane draws a cuboid built from the seg plan:
 the front face sits on the solved screen plane and the body extrudes
 backward by a display thickness (5 cm), replacing the depth-fused cuboid
-for that detection. Range is purely the `class_sizes` prior, so the cuboid
-is tinted cyan as a prior, never the measured green; a `SEG_SCALE_MISMATCH`
-warning logs when the prior range disagrees with the fused depth range by
-more than 0.15 m + 15%. The 2D diagnostic preview outlines the quad
+for that detection. Orientation and extents stay prior-driven, so the
+cuboid is tinted cyan as a prior, never the measured green; on the worker
+(not the 72 Hz render loop) the corner range is compared against the fused
+depth range, and on disagreement beyond 0.15 m + 15% the corner position
+is rescaled along the camera ray to the measured range with a throttled
+`SEG_SCALE_MISMATCH` warning. The 2D diagnostic preview outlines the quad
 (TL to TR to BR to BL) in place of the axis-aligned box. Poses are solved
 for the classes listed in `class_sizes` (default `tv:0.55,0.32`); every
 masked detection still gets a quad.
 
 ## Open work
 
-1. Deploy validation on the headset (seg manifest + `--class-sizes` for
+1. Subpixel isoline corners (marching squares + edge line fits): the
+   13.3 px quantization dominates pose error and the reprojection gate
+   cannot catch it, so this moves ahead of everything else.
+2. IPPE two-fold disambiguation (depth normal or temporal).
+3. Ray-plane metric corners to drop the size prior; LM refinement on the
+   true reprojection error; per-track SE(3) EMA filtering.
+4. Deploy validation on the headset (seg manifest + `--class-sizes` for
    the actual panel), thermal and accuracy acceptance.
-2. Panel-specific size/aspect tuning: reprojection RMS in the tens of
+5. Panel-specific size/aspect tuning: reprojection RMS in the tens of
    pixels means the quad's shape does not match the `class_sizes` prior
-   (now refused at 8 px instead of drawn).
-3. Accuracy: subpixel isoline corners (marching squares + edge line fits),
-   IPPE two-fold disambiguation (depth normal or temporal), LM refinement
-   on the true reprojection error, ray-plane metric corners to drop the
-   size prior, per-track SE(3) EMA filtering.
+   (now refused by the shared gate instead of drawn).

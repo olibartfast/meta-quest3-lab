@@ -50,6 +50,33 @@ struct Pose {
     std::array<float, 3> position{0.0F, 0.0F, 0.0F};
 };
 
+// Single gate for a solved corner pose, shared by the detector worker and
+// the render path so the threshold cannot drift between the two:
+//   - rectangularity (quad area share of mask foreground) >= 0.70,
+//   - absolute reprojection RMS <= 8 px (coarse aspect-mismatch catch),
+//   - relative reprojection RMS <= 3% of the quad diagonal (an absolute
+//     threshold is lenient for a 60 px quad and strict for a 600 px one).
+// With 4 points much of the corner noise is absorbed into a wrong pose
+// that still reprojects well, so this gate is necessary but not
+// sufficient: subpixel isoline corners are the real fix (see roadmap).
+inline constexpr float kMaxCornerReprojectionPixels = 8.0F;
+inline constexpr float kMaxRelativeCornerReprojection = 0.03F;
+inline constexpr float kMinimumQuadRectangularity = 0.70F;
+
+bool IsCornerPoseReliable(const Quad& quad, float reprojectionPixels);
+
+// Symmetric orthonormalization of two noisy homography columns into a
+// rotation frame: splits the angular error evenly around the bisector
+// instead of Gram-Schmidt keeping the first column exact and dumping it
+// all into the second. Returns false with no output written when the
+// columns are degenerate (zero or parallel).
+bool SymmetricOrthonormalize(
+    const double first[3],
+    const double second[3],
+    double axisX[3],
+    double axisY[3],
+    double axisZ[3]);
+
 // Largest quad in a binary instance mask (row-major, nonzero is
 // foreground). Returns false with a reason when no quad survives the
 // area/aspect gates: an empty answer is correct output, never a guess.

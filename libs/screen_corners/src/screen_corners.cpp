@@ -622,6 +622,65 @@ void ProjectNormalizedToPixel(
 
 }  // namespace
 
+bool SymmetricOrthonormalize(
+    const double first[3],
+    const double second[3],
+    double axisX[3],
+    double axisY[3],
+    double axisZ[3]) {
+    if (first == nullptr || second == nullptr || axisX == nullptr ||
+        axisY == nullptr || axisZ == nullptr) {
+        return false;
+    }
+    Vector3 a = Normalize({first[0], first[1], first[2]});
+    Vector3 b = Normalize({second[0], second[1], second[2]});
+    if (Norm(a) < 1e-12 || Norm(b) < 1e-12) {
+        return false;
+    }
+    const Vector3 sum = {a.x + b.x, a.y + b.y, a.z + b.z};
+    if (Norm(sum) < 1e-9) {
+        return false;  // antiparallel columns
+    }
+    const Vector3 bisector = Normalize(sum);
+    const Vector3 normal = Normalize(Cross(a, b));
+    if (Norm(normal) < 1e-12) {
+        return false;  // parallel columns
+    }
+    Vector3 inPlane = Cross(normal, bisector);
+    // inPlane ~= b - a direction (leans toward b); negate if it leans
+    // toward a so X stays near the first column and Y near the second.
+    if (Dot(inPlane, a) > 0.0) {
+        inPlane = {-inPlane.x, -inPlane.y, -inPlane.z};
+    }
+    constexpr double kHalf = 1.0 / 1.4142135623730951;  // 1/sqrt(2)
+    Vector3 x = {
+        kHalf * (bisector.x - inPlane.x),
+        kHalf * (bisector.y - inPlane.y),
+        kHalf * (bisector.z - inPlane.z),
+    };
+    Vector3 y = {
+        kHalf * (bisector.x + inPlane.x),
+        kHalf * (bisector.y + inPlane.y),
+        kHalf * (bisector.z + inPlane.z),
+    };
+    x = Normalize(x);
+    y = Normalize(y);
+    if (Norm(x) < 1e-12 || Norm(y) < 1e-12) {
+        return false;
+    }
+    const Vector3 z = Normalize(Cross(x, y));
+    axisX[0] = x.x;
+    axisX[1] = x.y;
+    axisX[2] = x.z;
+    axisY[0] = y.x;
+    axisY[1] = y.y;
+    axisY[2] = y.z;
+    axisZ[0] = z.x;
+    axisZ[1] = z.y;
+    axisZ[2] = z.z;
+    return true;
+}
+
 bool FindScreenQuadFromMask(
     const uint8_t* mask,
     int width,
@@ -719,6 +778,30 @@ bool FindScreenQuadFromMask(
     return true;
 }
 
+bool IsCornerPoseReliable(const Quad& quad, float reprojectionPixels) {
+    if (!(reprojectionPixels >= 0.0F) ||
+        reprojectionPixels > kMaxCornerReprojectionPixels) {
+        return false;
+    }
+    if (quad.score < kMinimumQuadRectangularity) {
+        return false;
+    }
+    const auto diagonal = [](const Point2& a, const Point2& b) {
+        const double dx = static_cast<double>(a.x) - b.x;
+        const double dy = static_cast<double>(a.y) - b.y;
+        return std::sqrt(dx * dx + dy * dy);
+    };
+    const double extent =
+        0.5 *
+        (diagonal(quad.corners[0], quad.corners[2]) +
+         diagonal(quad.corners[1], quad.corners[3]));
+    if (!(extent > 1e-6)) {
+        return false;
+    }
+    return static_cast<double>(reprojectionPixels) <=
+           static_cast<double>(kMaxRelativeCornerReprojection) * extent;
+}
+
 bool SolveQuadPose(
     const Quad& quad,
     const Intrinsics& intrinsics,
@@ -790,38 +873,40 @@ bool SolveQuadPose(
         return fail("homography is degenerate");
     }
     // Column scale from the orthonormality constraint |r1| = |r2| = 1.
-    double scale = 2.0 / (firstNorm + secondNorm);
-    Vector3 axisX = {first.x * scale, first.y * scale, first.z * scale};
-    Vector3 axisY = {second.x * scale, second.y * scale, second.z * scale};
+    // It scales the translation; the rotation axes below are unit by
+    // construction.
+    const double scale = 2.0 / (firstNorm + secondNorm);
     Vector3 translation = {
         third.x * scale, third.y * scale, third.z * scale};
+    const double firstArray[3] = {first.x, first.y, first.z};
+    const double secondArray[3] = {second.x, second.y, second.z};
+    double axisXArray[3] = {0.0, 0.0, 0.0};
+    double axisYArray[3] = {0.0, 0.0, 0.0};
+    double axisZArray[3] = {0.0, 0.0, 0.0};
+    if (!SymmetricOrthonormalize(
+            firstArray, secondArray, axisXArray, axisYArray, axisZArray)) {
+        return fail("homography is degenerate");
+    }
+    Vector3 axisX = {axisXArray[0], axisXArray[1], axisXArray[2]};
+    Vector3 axisY = {axisYArray[0], axisYArray[1], axisYArray[2]};
+    Vector3 axisZ = {axisZArray[0], axisZArray[1], axisZArray[2]};
     // The homography fixes one representative; choose the physical branch
-    // with the screen in front of the camera.
+    // with the screen in front of the camera. Only X, Y and t flip:
+    // (-X)x(-Y) = XxY, so Z is unchanged and det(R) stays +1.
     if (translation.z < 0.0) {
         axisX = {-axisX.x, -axisX.y, -axisX.z};
         axisY = {-axisY.x, -axisY.y, -axisY.z};
         translation = {-translation.x, -translation.y, -translation.z};
     }
-    // Symmetric orthonormalization: Gram-Schmidt kept X exact and dumped
-    // all error into Y. Re-derive X from the corrected Y/Z so both image
-    // axes share the residual.
-    axisX = Normalize(axisX);
-    const double projection = Dot(axisX, axisY);
-    axisY = Normalize(
-        {axisY.x - projection * axisX.x, axisY.y - projection * axisX.y,
-         axisY.z - projection * axisX.z});
-    if (Norm(axisY) < 1e-12) {
-        return fail("homography is degenerate");
-    }
-    Vector3 axisZ = Normalize(Cross(axisX, axisY));
-    axisX = Cross(axisY, axisZ);
     const double rotation[3][3] = {
         {axisX.x, axisY.x, axisZ.x},
         {axisX.y, axisY.y, axisZ.y},
         {axisX.z, axisY.z, axisZ.z},
     };
     // The plane normal (object +Z in camera) must face the camera and not
-    // be grazing: a flipped or edge-on solution fits the same 4 pixels.
+    // be grazing. This catches mirrored pairings and edge-on views, not
+    // the planar two-fold (IPPE) flip: both IPPE solutions face the camera,
+    // so that ambiguity stays open (see roadmap).
     {
         const double range = Norm(translation);
         const double facing = Dot(axisZ, translation);
