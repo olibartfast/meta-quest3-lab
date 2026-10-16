@@ -73,6 +73,9 @@ struct Detection {
     // contracts (libs/screen_corners).
     bool hasCorners = false;
     std::array<float, 8> cornerXy{};
+    // Rectangularity score of the fitted quad (quad area share of mask
+    // foreground); part of the shared pose gate in screen_corners.
+    float cornerScore = 0.0F;
     bool hasCornerPose = false;
     std::array<float, 4> cornerQuatXyzw{};
     std::array<float, 3> cornerPosition{};

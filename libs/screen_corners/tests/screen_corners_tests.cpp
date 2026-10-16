@@ -540,8 +540,69 @@ void TestDistortionAwareSolve() {
     }
 }
 
-void TestBorderQuadRejected() {
-    std::vector<uint8_t> mask = MakeMask();
+void TestSymmetricOrthonormalize() {
+    // Noisy columns ~10 deg off perpendicular: each output axis must move
+    // half the error (balanced), stay unit and orthonormal, keep det +1,
+    // and keep X near the first column / Y near the second.
+    const double first[3] = {1.0, 0.1, 0.0};
+    const double second[3] = {0.08, 1.0, 0.0};
+    double axisX[3] = {0.0, 0.0, 0.0};
+    double axisY[3] = {0.0, 0.0, 0.0};
+    double axisZ[3] = {0.0, 0.0, 0.0};
+    assert(questlab::corners::SymmetricOrthonormalize(
+        first, second, axisX, axisY, axisZ));
+    const auto norm = [](const double v[3]) {
+        return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    };
+    const auto dot = [](const double a[3], const double b[3]) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    };
+    assert(std::abs(norm(axisX) - 1.0) < 1e-9);
+    assert(std::abs(norm(axisY) - 1.0) < 1e-9);
+    assert(std::abs(norm(axisZ) - 1.0) < 1e-9);
+    assert(std::abs(dot(axisX, axisY)) < 1e-9);
+    assert(std::abs(dot(axisX, axisZ)) < 1e-9);
+    assert(std::abs(dot(axisY, axisZ)) < 1e-9);
+    // Right-handed: Z == X x Y.
+    assert(std::abs(
+               axisZ[0] - (axisX[1] * axisY[2] - axisX[2] * axisY[1])) < 1e-9);
+    assert(std::abs(
+               axisZ[1] - (axisX[2] * axisY[0] - axisX[0] * axisY[2])) < 1e-9);
+    assert(std::abs(
+               axisZ[2] - (axisX[0] * axisY[1] - axisX[1] * axisY[0])) < 1e-9);
+    // Balanced: X moved from first by the same angle Y moved from second
+    // (Gram-Schmidt would keep X exact and dump everything into Y).
+    double unitFirst[3] = {first[0], first[1], first[2]};
+    double unitSecond[3] = {second[0], second[1], second[2]};
+    const double firstNorm = norm(unitFirst);
+    const double secondNorm = norm(unitSecond);
+    for (int axis = 0; axis < 3; ++axis) {
+        unitFirst[axis] /= firstNorm;
+        unitSecond[axis] /= secondNorm;
+    }
+    const double moveX = std::acos(
+        std::clamp(dot(axisX, unitFirst), -1.0, 1.0));
+    const double moveY = std::acos(
+        std::clamp(dot(axisY, unitSecond), -1.0, 1.0));
+    assert(std::abs(moveX - moveY) < 1e-9);
+    assert(moveX > 1e-6);  // error is shared, not kept exact
+    // Each axis moved half the deviation from perpendicular.
+    const double inputAngle = std::acos(std::clamp(
+        (first[0] * second[0] + first[1] * second[1] + first[2] * second[2]) /
+            (firstNorm * secondNorm),
+        -1.0, 1.0));
+    assert(
+        std::abs(moveX - 0.5 * (M_PI_2 - inputAngle)) < 1e-9);
+    // Degenerate inputs refuse.
+    const double zero[3] = {0.0, 0.0, 0.0};
+    const double parallel[3] = {2.0, 0.2, 0.0};
+    assert(!questlab::corners::SymmetricOrthonormalize(
+        zero, second, axisX, axisY, axisZ));
+    assert(!questlab::corners::SymmetricOrthonormalize(
+        first, parallel, axisX, axisY, axisZ));
+}
+
+void TestBorderQuadRejected() {    std::vector<uint8_t> mask = MakeMask();
     FillRect(&mask, 0, 80, 299, 199);  // touches the left border
     Quad quad;
     std::string error;
@@ -577,6 +638,7 @@ int main() {
     TestMaskPoseEndToEnd();
     TestYawSignNear180Degrees();
     TestDistortionAwareSolve();
+    TestSymmetricOrthonormalize();
     TestBorderQuadRejected();
     TestPortraitAspectPasses();
     return 0;

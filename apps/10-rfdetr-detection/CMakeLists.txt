@@ -73,6 +73,7 @@ target_link_libraries(rfdetr_detection PRIVATE
     detection_fusion
     depth_source
     object_detector
+    screen_corners
     vulkan_renderer
     xr_meta_passthrough
     android_native_app_glue
