@@ -718,14 +718,21 @@ private:
             PreparedObject object;
             object.detection = detection;
             object.projection = projected;
-            // Corner-pose extension: map the service's capture-camera PnP
-            // pose into LOCAL. Reuses the exact camera->LOCAL convention of
+            // Corner-pose extension: map the headset's capture-camera PnP
+            // pose (solved on-device in libs/screen_corners) into LOCAL.
+            // Reuses the exact camera->LOCAL convention of
             // BuildDetectionProjection (libs/detection_projection): normalize
             // the Camera2 cameraFromHead orientation, invert it to
             // headFromCamera, then route points and directions through the
             // normalized head pose. Any non-finite input or failed normalize
             // leaves hasCornerPoseLocal false so nothing is drawn.
+            // Gated on reprojection RMS: tens of pixels mean the quad is
+            // not this class size, so the pose is refused, not drawn.
+            constexpr float kMaxCornerReprojectionPixels = 8.0F;
             if (detection.hasCornerPose &&
+                detection.cornerReprojectionPixels >= 0.0F &&
+                detection.cornerReprojectionPixels <=
+                    kMaxCornerReprojectionPixels &&
                 std::isfinite(detection.cornerPosition[0]) &&
                 std::isfinite(detection.cornerPosition[1]) &&
                 std::isfinite(detection.cornerPosition[2]) &&
@@ -1454,11 +1461,51 @@ public:
                     });
                 }
                 // Seg-plan cuboid: the screen plane solved from the mask
-                // (corner pose + known size) extruded backward by the
+                // (corner pose + class-size prior) extruded backward by the
                 // display thickness. This replaces the depth-fused cuboid
-                // for this detection - one geometry per object.
+                // for this detection - one geometry per object. Range is
+                // purely the size prior, so it is tinted cyan as a prior,
+                // never the measured green: what is drawn is what is
+                // measured, and this range is assumed.
                 if (drawsSegCuboid) {
                     constexpr float kScreenThicknessMeters = 0.05F;
+                    if (object->hasBox) {
+                        const questlab::math::Vec3 cornerMinusOrigin{
+                            object->cornerPoseLocal.position.x -
+                                object->projection.originInLocal.x,
+                            object->cornerPoseLocal.position.y -
+                                object->projection.originInLocal.y,
+                            object->cornerPoseLocal.position.z -
+                                object->projection.originInLocal.z,
+                        };
+                        const float cornerRange = std::sqrt(
+                            cornerMinusOrigin.x * cornerMinusOrigin.x +
+                            cornerMinusOrigin.y * cornerMinusOrigin.y +
+                            cornerMinusOrigin.z * cornerMinusOrigin.z);
+                        const float fusedRange =
+                            object->box.representativeRangeMeters;
+                        const float disagreement =
+                            std::abs(cornerRange - fusedRange);
+                        if (std::isfinite(disagreement) &&
+                            disagreement >
+                                0.15F + 0.15F * std::abs(fusedRange)) {
+                            questlab::LogWarning(
+                                "SEG_SCALE_MISMATCH class=%s "
+                                "corner_range=%.2fm fused_range=%.2fm "
+                                "reproj=%.2fpx: class-size prior disagrees "
+                                "with depth, cuboid is a prior",
+                                object->detection.className.c_str(),
+                                cornerRange,
+                                fusedRange,
+                                object->detection.cornerReprojectionPixels);
+                        }
+                    }
+                    const std::array<float, 4> segColor = {
+                        0.25F * ageBrightness,
+                        0.85F * ageBrightness,
+                        1.0F * ageBrightness,
+                        1.0F,
+                    };
                     const questlab::math::Mat4 cornerPose =
                         questlab::math::Multiply(
                             questlab::math::TranslationMatrix(
@@ -1480,7 +1527,7 @@ public:
                                 object->cornerSizeWH[0],
                                 object->cornerSizeWH[1],
                                 kScreenThicknessMeters)),
-                        color,
+                        segColor,
                     });
                 }
                 // No measured box means nothing is drawn. Bearing rays were
@@ -1722,7 +1769,8 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraConf
     adapter->OnConfigured(capabilities);
     questlab::LogInfo(
         "Selected camera id=%s position=%d stream=%dx%d intrinsics=%s pose=%s "
-        "K=[%.3f %.3f %.3f %.3f %.3f] camera_rotation=[%.5f %.5f %.5f "
+        "K=[%.3f %.3f %.3f %.3f %.3f] dist=[%.5f %.5f %.5f %.5f %.5f] "
+        "camera_rotation=[%.5f %.5f %.5f "
         "%.5f] camera_position=[%.5f %.5f %.5f]",
         capabilities.cameraId.c_str(),
         capabilities.cameraPosition,
@@ -1735,6 +1783,11 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraConf
         capabilities.intrinsics.cx,
         capabilities.intrinsics.cy,
         capabilities.intrinsics.skew,
+        capabilities.intrinsics.distortion[0],
+        capabilities.intrinsics.distortion[1],
+        capabilities.intrinsics.distortion[2],
+        capabilities.intrinsics.distortion[3],
+        capabilities.intrinsics.distortion[4],
         capabilities.cameraFromHead.orientation[0],
         capabilities.cameraFromHead.orientation[1],
         capabilities.cameraFromHead.orientation[2],
@@ -1742,6 +1795,27 @@ Java_com_olibartfast_questlab_questcamera_QuestCameraActivity_nativeOnCameraConf
         capabilities.cameraFromHead.position[0],
         capabilities.cameraFromHead.position[1],
         capabilities.cameraFromHead.position[2]);
+    // LENS_INTRINSIC_CALIBRATION is defined in active-array coordinates:
+    // if this stream is a crop or downscale, unscaled fx/cx/cy bias both
+    // the box rays and PnP. At 1280x960 cx should sit near 640 only when
+    // the array matches; near 480/640 mismatch means scaling is missing.
+    if (capabilities.intrinsics.valid && width > 0 && height > 0) {
+        const float cxError = std::abs(
+            capabilities.intrinsics.cx - static_cast<float>(width) * 0.5F);
+        const float cyError = std::abs(
+            capabilities.intrinsics.cy - static_cast<float>(height) * 0.5F);
+        if (cxError > static_cast<float>(width) * 0.10F ||
+            cyError > static_cast<float>(height) * 0.10F) {
+            questlab::LogWarning(
+                "Intrinsics principal point [%.1f %.1f] is far from the "
+                "stream centre [%.1f %.1f]: LENS_INTRINSIC_CALIBRATION may "
+                "still be in active-array coordinates (unscaled crop)",
+                capabilities.intrinsics.cx,
+                capabilities.intrinsics.cy,
+                static_cast<float>(width) * 0.5F,
+                static_cast<float>(height) * 0.5F);
+        }
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL

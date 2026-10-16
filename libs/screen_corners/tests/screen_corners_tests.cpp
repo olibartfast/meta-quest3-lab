@@ -456,6 +456,111 @@ void TestMaskPoseEndToEnd() {
     assert(reprojection <= 3.0F);
 }
 
+void TestYawSignNear180Degrees() {
+    // Regression for the Shepperd bug: at trace ~= -1 the old
+    // signless fallback mirrored yaw (40 deg error, ~0 reproj).
+    const Intrinsics intrinsics{866.1F, 866.1F, 640.5F, 640.5F};
+    for (const double yawDegrees : {-20.0, 20.0}) {
+        PoseSample sample;
+        sample.rotation = Multiply(
+            UprightFlip(), RotateY(yawDegrees * M_PI / 180.0));
+        sample.position[0] = 0.1;
+        sample.position[1] = 0.05;
+        sample.position[2] = 2.0;
+        const Quad quad = ProjectCorners(
+            sample, intrinsics, 0.55F, 0.32F, false);
+        Pose pose;
+        float reprojection = 0.0F;
+        std::string error;
+        assert(questlab::corners::SolveQuadPose(
+            quad, intrinsics, 0.55F, 0.32F, &pose, &reprojection, &error));
+        AssertSameRotation(pose.quat, sample.rotation, 0.002);
+        assert(reprojection <= 0.05F);
+        // X-axis sign must follow the yaw sign, not mirror it.
+        const double x = pose.quat[0];
+        const double y = pose.quat[1];
+        const double z = pose.quat[2];
+        const double w = pose.quat[3];
+        const double solvedXx = 1.0 - 2.0 * (y * y + z * z);
+        const double solvedZx = 2.0 * (x * z - y * w);
+        const double expectedSign = yawDegrees > 0.0 ? 1.0 : -1.0;
+        // True X axis is (cos yaw, 0, +/-sin yaw) up to the flip; the
+        // z-component sign must match sin(yaw).
+        assert(solvedZx * expectedSign > 0.0);
+        (void)solvedXx;
+    }
+}
+
+void TestDistortionAwareSolve() {
+    // Corners distorted with Brown-Conrady must solve back to the true
+    // pose when the same model is supplied; a pinhole solve is biased.
+    Intrinsics intrinsics{600.0F, 600.0F, 320.0F, 240.0F};
+    intrinsics.skew = 1.5F;
+    intrinsics.distortion = {-0.22F, 0.05F, 0.0F, 0.001F, -0.001F};
+    PoseSample sample;
+    sample.rotation = Multiply(UprightFlip(), RotateY(0.3));
+    sample.position[0] = 0.1;
+    sample.position[1] = -0.05;
+    sample.position[2] = 2.0;
+    const double halfW = 0.275;
+    const double halfH = 0.16;
+    const double object[4][2] = {
+        {-halfW, halfH}, {halfW, halfH}, {halfW, -halfH}, {-halfW, -halfH}};
+    Quad quad;
+    for (int index = 0; index < 4; ++index) {
+        double camera[3] = {0.0, 0.0, 0.0};
+        for (int row = 0; row < 3; ++row) {
+            camera[row] = sample.rotation.r[row][0] * object[index][0] +
+                          sample.rotation.r[row][1] * object[index][1] +
+                          sample.position[row];
+        }
+        const double xn = camera[0] / camera[2];
+        const double yn = camera[1] / camera[2];
+        const double r2 = xn * xn + yn * yn;
+        const double r4 = r2 * r2;
+        const double radial = 1.0 + intrinsics.distortion[0] * r2 +
+                              intrinsics.distortion[1] * r4;
+        const double xd = xn * radial + 2.0 * intrinsics.distortion[3] * xn * yn +
+                          intrinsics.distortion[4] * (r2 + 2.0 * xn * xn);
+        const double yd = yn * radial + intrinsics.distortion[3] * (r2 + 2.0 * yn * yn) +
+                          2.0 * intrinsics.distortion[4] * xn * yn;
+        quad.corners[index] = {
+            static_cast<float>(intrinsics.fx * xd + intrinsics.skew * yd + intrinsics.cx),
+            static_cast<float>(intrinsics.fy * yd + intrinsics.cy)};
+    }
+    Pose pose;
+    float reprojection = 0.0F;
+    std::string error;
+    assert(questlab::corners::SolveQuadPose(
+        quad, intrinsics, 0.55F, 0.32F, &pose, &reprojection, &error));
+    AssertSameRotation(pose.quat, sample.rotation, 0.01);
+    assert(reprojection <= 0.5F);
+    for (int axis = 0; axis < 3; ++axis) {
+        assert(std::abs(pose.position[axis] - sample.position[axis]) <= 0.01);
+    }
+}
+
+void TestBorderQuadRejected() {
+    std::vector<uint8_t> mask = MakeMask();
+    FillRect(&mask, 0, 80, 299, 199);  // touches the left border
+    Quad quad;
+    std::string error;
+    assert(!questlab::corners::FindScreenQuadFromMask(
+        mask.data(), kWidth, kHeight, &quad, &error));
+    assert(error.find("border") != std::string::npos);
+}
+
+void TestPortraitAspectPasses() {
+    // 121x241 portrait: longer/shorter = 1.99, must pass; the old
+    // width/height gate rejected every portrait quad.
+    std::vector<uint8_t> mask = MakeMask();
+    FillRect(&mask, 250, 100, 370, 340);
+    Quad quad;
+    std::string error;
+    assert(questlab::corners::FindScreenQuadFromMask(
+        mask.data(), kWidth, kHeight, &quad, &error));
+}
+
 }  // namespace
 
 int main() {
@@ -470,5 +575,9 @@ int main() {
     TestPoseRoundTrip();
     TestPoseRefusals();
     TestMaskPoseEndToEnd();
+    TestYawSignNear180Degrees();
+    TestDistortionAwareSolve();
+    TestBorderQuadRejected();
+    TestPortraitAspectPasses();
     return 0;
 }

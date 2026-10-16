@@ -10,43 +10,57 @@
 namespace questlab::corners {
 namespace {
 
-// Order 4 unordered quad vertices as TL, TR, BR, BL (y down): TL has the
-// smallest x+y, BR the largest; of the other two, TR has the largest x-y.
+// Order 4 unordered quad vertices as TL, TR, BR, BL (y down) by polar
+// angle around the centroid: robust under head roll and strong
+// perspective, where the x+y / x-y sums mislabel corners.
 bool OrderCorners(std::vector<cv::Point2f>* points) {
     if (points == nullptr || points->size() != 4) {
         return false;
     }
     auto& p = *points;
-    const size_t topLeft = static_cast<size_t>(
-        std::min_element(
-            p.begin(), p.end(),
-            [](const cv::Point2f& a, const cv::Point2f& b) {
-                return a.x + a.y < b.x + b.y;
-            }) -
-        p.begin());
-    const size_t bottomRight = static_cast<size_t>(
-        std::max_element(
-            p.begin(), p.end(),
-            [](const cv::Point2f& a, const cv::Point2f& b) {
-                return a.x + a.y < b.x + b.y;
-            }) -
-        p.begin());
-    size_t rest[2] = {0, 0};
-    size_t cursor = 0;
+    double centroidX = 0.0;
+    double centroidY = 0.0;
+    for (const auto& point : p) {
+        centroidX += point.x;
+        centroidY += point.y;
+    }
+    centroidX *= 0.25;
+    centroidY *= 0.25;
+    std::array<double, 4> angles{};
     for (size_t i = 0; i < 4; ++i) {
-        if (i != topLeft && i != bottomRight) {
-            rest[cursor++] = i;
+        angles[i] =
+            std::atan2(p[i].y - centroidY, p[i].x - centroidX);
+    }
+    std::array<size_t, 4> order = {0, 1, 2, 3};
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        return angles[a] < angles[b];
+    });
+    std::array<cv::Point2f, 4> sorted = {
+        p[order[0]], p[order[1]], p[order[2]], p[order[3]]};
+    size_t topLeft = 0;
+    for (size_t i = 1; i < 4; ++i) {
+        if (sorted[i].x + sorted[i].y < sorted[topLeft].x + sorted[topLeft].y) {
+            topLeft = i;
         }
     }
-    const size_t topRight =
-        (p[rest[0]].x - p[rest[0]].y) > (p[rest[1]].x - p[rest[1]].y)
-        ? rest[0]
-        : rest[1];
-    const size_t bottomLeft = topRight == rest[0] ? rest[1] : rest[0];
-    const std::array<cv::Point2f, 4> ordered = {
-        p[topLeft], p[topRight], p[bottomRight], p[bottomLeft]};
+    std::array<cv::Point2f, 4> rotated{};
     for (size_t i = 0; i < 4; ++i) {
-        p[i] = ordered[i];
+        rotated[i] = sorted[(topLeft + i) % 4];
+    }
+    double twice = 0.0;
+    for (size_t i = 0; i < 4; ++i) {
+        const auto& a = rotated[i];
+        const auto& b = rotated[(i + 1) % 4];
+        twice += static_cast<double>(a.x) * b.y -
+                 static_cast<double>(b.x) * a.y;
+    }
+    if (twice < 0.0) {
+        const std::array<cv::Point2f, 4> fixed = {
+            rotated[0], rotated[3], rotated[2], rotated[1]};
+        rotated = fixed;
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        p[i] = rotated[i];
     }
     return true;
 }
@@ -98,10 +112,14 @@ bool FindScreenQuad(
         if (bounds.width < 32 || bounds.height < 32) {
             continue;
         }
-        // Display aspect window: ultrawide 21:9 (2.33) to portrait 9:16
-        // handled sideways; squarish contours are furniture, not screens.
-        const double aspect = static_cast<double>(bounds.width) /
-            static_cast<double>(bounds.height);
+        // Display aspect window on the longer/shorter ratio: ultrawide
+        // 21:9 (2.33) to portrait handled the same way; squarish contours
+        // are furniture, not screens.
+        const double longer =
+            static_cast<double>(std::max(bounds.width, bounds.height));
+        const double shorter = static_cast<double>(
+            std::max(1, std::min(bounds.width, bounds.height)));
+        const double aspect = longer / shorter;
         if (aspect < 1.1 || aspect > 2.6) {
             continue;
         }
@@ -191,8 +209,16 @@ bool FindScreenQuadFromMask(
     if (bounds.width < 32 || bounds.height < 32) {
         return fail("mask quad below minimum size");
     }
-    const double aspect = static_cast<double>(bounds.width) /
-        static_cast<double>(bounds.height);
+    if (bounds.x <= 3 || bounds.y <= 3 ||
+        bounds.x + bounds.width >= width - 3 ||
+        bounds.y + bounds.height >= height - 3) {
+        return fail("mask quad touches the image border");
+    }
+    const double longer =
+        static_cast<double>(std::max(bounds.width, bounds.height));
+    const double shorter =
+        static_cast<double>(std::max(1, std::min(bounds.width, bounds.height)));
+    const double aspect = longer / shorter;
     if (aspect < 1.1 || aspect > 2.6) {
         return fail("mask quad outside display aspect window");
     }
@@ -248,20 +274,23 @@ bool SolveQuadPose(
         }
         image.emplace_back(corner.x, corner.y);
     }
-    const cv::Mat cameraMatrix = (cv::Mat_<double>(3, 3) << intrinsics.fx, 0.0,
-                                  intrinsics.cx, 0.0, intrinsics.fy,
-                                  intrinsics.cy, 0.0, 0.0, 1.0);
+    const cv::Mat cameraMatrix =
+        (cv::Mat_<double>(3, 3) << intrinsics.fx, intrinsics.skew,
+         intrinsics.cx, 0.0, intrinsics.fy, intrinsics.cy, 0.0, 0.0, 1.0);
+    cv::Mat distCoeffs = (cv::Mat_<double>(5, 1) << intrinsics.distortion[0],
+                          intrinsics.distortion[1], intrinsics.distortion[2],
+                          intrinsics.distortion[3], intrinsics.distortion[4]);
     cv::Mat rvec;
     cv::Mat tvec;
     // AP3P is the stable 4-point choice; RANSAC is meaningless with n=4
     // (no redundancy), so a direct solve plus reprojection gate instead.
     if (!cv::solvePnP(
-            object, image, cameraMatrix, cv::noArray(), rvec, tvec, false,
+            object, image, cameraMatrix, distCoeffs, rvec, tvec, false,
             cv::SOLVEPNP_AP3P)) {
         return fail("solvePnP failed");
     }
     std::vector<cv::Point2f> reprojected;
-    cv::projectPoints(object, rvec, tvec, cameraMatrix, cv::noArray(),
+    cv::projectPoints(object, rvec, tvec, cameraMatrix, distCoeffs,
                       reprojected);
     double squared = 0.0;
     for (size_t i = 0; i < 4; ++i) {
@@ -277,40 +306,55 @@ bool SolveQuadPose(
     cv::Rodrigues(rvec, rotation);
     // Camera frame is +Y down while the object frame is +Y up: the solved
     // rotation already encodes that flip, keep it verbatim.
+    // Shepperd's method: branch on the largest of trace, R00, R11, R22.
+    // The screen convention sits at trace = -1 (w ~= 0 nominal), so the
+    // old trace-or-signless-fallback mirrored yaw near 180 deg.
     const double trace =
         rotation.at<double>(0, 0) + rotation.at<double>(1, 1) +
         rotation.at<double>(2, 2);
-    double qw = std::sqrt(std::max(0.0, 1.0 + trace)) * 0.5;
     double qx = 0.0;
     double qy = 0.0;
     double qz = 0.0;
-    if (qw > 1.0e-6) {
-        qx = (rotation.at<double>(2, 1) - rotation.at<double>(1, 2)) /
-            (4.0 * qw);
-        qy = (rotation.at<double>(0, 2) - rotation.at<double>(2, 0)) /
-            (4.0 * qw);
-        qz = (rotation.at<double>(1, 0) - rotation.at<double>(0, 1)) /
-            (4.0 * qw);
+    double qw = 0.0;
+    if (trace > 0.0) {
+        const double s = std::sqrt(trace + 1.0) * 2.0;
+        qw = 0.25 * s;
+        qx = (rotation.at<double>(2, 1) - rotation.at<double>(1, 2)) / s;
+        qy = (rotation.at<double>(0, 2) - rotation.at<double>(2, 0)) / s;
+        qz = (rotation.at<double>(1, 0) - rotation.at<double>(0, 1)) / s;
+    } else if (
+        rotation.at<double>(0, 0) > rotation.at<double>(1, 1) &&
+        rotation.at<double>(0, 0) > rotation.at<double>(2, 2)) {
+        const double s =
+            std::sqrt(
+                1.0 + rotation.at<double>(0, 0) - rotation.at<double>(1, 1) -
+                rotation.at<double>(2, 2)) *
+            2.0;
+        qw = (rotation.at<double>(2, 1) - rotation.at<double>(1, 2)) / s;
+        qx = 0.25 * s;
+        qy = (rotation.at<double>(0, 1) + rotation.at<double>(1, 0)) / s;
+        qz = (rotation.at<double>(0, 2) + rotation.at<double>(2, 0)) / s;
+    } else if (
+        rotation.at<double>(1, 1) > rotation.at<double>(2, 2)) {
+        const double s =
+            std::sqrt(
+                1.0 + rotation.at<double>(1, 1) - rotation.at<double>(0, 0) -
+                rotation.at<double>(2, 2)) *
+            2.0;
+        qw = (rotation.at<double>(0, 2) - rotation.at<double>(2, 0)) / s;
+        qx = (rotation.at<double>(0, 1) + rotation.at<double>(1, 0)) / s;
+        qy = 0.25 * s;
+        qz = (rotation.at<double>(1, 2) + rotation.at<double>(2, 1)) / s;
     } else {
-        // 180-degree case: fall back to the largest diagonal.
-        qx = std::sqrt(
-                 std::max(
-                     0.0, 1.0 + rotation.at<double>(0, 0) -
-                         rotation.at<double>(1, 1) -
-                         rotation.at<double>(2, 2))) *
-            0.5;
-        qy = std::sqrt(
-                 std::max(
-                     0.0, 1.0 - rotation.at<double>(0, 0) +
-                         rotation.at<double>(1, 1) -
-                         rotation.at<double>(2, 2))) *
-            0.5;
-        qz = std::sqrt(
-                 std::max(
-                     0.0, 1.0 - rotation.at<double>(0, 0) -
-                         rotation.at<double>(1, 1) +
-                         rotation.at<double>(2, 2))) *
-            0.5;
+        const double s =
+            std::sqrt(
+                1.0 + rotation.at<double>(2, 2) - rotation.at<double>(0, 0) -
+                rotation.at<double>(1, 1)) *
+            2.0;
+        qw = (rotation.at<double>(1, 0) - rotation.at<double>(0, 1)) / s;
+        qx = (rotation.at<double>(0, 2) + rotation.at<double>(2, 0)) / s;
+        qy = (rotation.at<double>(1, 2) + rotation.at<double>(2, 1)) / s;
+        qz = 0.25 * s;
     }
     const double norm =
         std::sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
