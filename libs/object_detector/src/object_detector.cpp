@@ -341,9 +341,16 @@ protected:
         completed.sourceHeight = capture.height;
         completed.manifestIdentity = manifestIdentity;
         completed.detections.reserve(detections.size());
-        const questlab::corners::Intrinsics intrinsics{
-            capture.intrinsics.fx, capture.intrinsics.fy,
-            capture.intrinsics.cx, capture.intrinsics.cy};
+        questlab::corners::Intrinsics intrinsics;
+        intrinsics.fx = capture.intrinsics.fx;
+        intrinsics.fy = capture.intrinsics.fy;
+        intrinsics.cx = capture.intrinsics.cx;
+        intrinsics.cy = capture.intrinsics.cy;
+        intrinsics.skew = capture.intrinsics.skew;
+        for (size_t index = 0; index < intrinsics.distortion.size(); ++index) {
+            intrinsics.distortion[index] =
+                capture.intrinsics.distortion[index];
+        }
         for (const rfdetr::Detection& detection : detections) {
             Detection converted;
             converted.classId = detection.classId;
@@ -370,13 +377,22 @@ protected:
                     const auto known =
                         classSizes_.find(detection.className);
                     if (known != classSizes_.end()) {
+                        // Gate the pose, not just log it: with 4 points the
+                        // homography fits exactly, so RMS measures K^-1 H vs
+                        // scaled-rotation (aspect mismatch + corner noise).
+                        // Tens of pixels mean the quad is not this class size.
+                        constexpr float kMaxCornerReprojectionPixels = 8.0F;
+                        constexpr float kMinimumQuadRectangularity = 0.70F;
                         questlab::corners::Pose pose;
                         float reprojection = -1.0F;
                         std::string poseError;
-                        if (questlab::corners::SolveQuadPose(
+                        if (quad.score >= kMinimumQuadRectangularity &&
+                            questlab::corners::SolveQuadPose(
                                 quad, intrinsics, known->second[0],
                                 known->second[1], &pose, &reprojection,
-                                &poseError)) {
+                                &poseError) &&
+                            reprojection >= 0.0F &&
+                            reprojection <= kMaxCornerReprojectionPixels) {
                             converted.hasCornerPose = true;
                             converted.cornerQuatXyzw = pose.quat;
                             converted.cornerPosition = pose.position;

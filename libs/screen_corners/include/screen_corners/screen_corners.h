@@ -34,6 +34,12 @@ struct Intrinsics {
     float fy = 0.0F;
     float cx = 0.0F;
     float cy = 0.0F;
+    // Skew (pixels) and Brown-Conrady k1, k2, k3, p1, p2, matching
+    // camera_source::CameraIntrinsics and libs/detection_projection. Zero
+    // means the pinhole model; SolveQuadPose undistorts corners before the
+    // homography so the PnP pose and the box-ray frustum share one model.
+    float skew = 0.0F;
+    std::array<float, 5> distortion{};
 };
 
 struct Pose {
@@ -58,9 +64,12 @@ bool FindScreenQuadFromMask(
 
 // Pose of the W×H display rectangle from its 4 image corners. The corners
 // are exactly planar, so the pose comes from the homography of the object
-// plane: K^-1 H = s [r1 r2 t], orthonormalized - the standard planar P4P.
-// Reprojection RMS (pixels) reports the fit; large values mean the quad is
-// not the screen (wrong pairing or bent contour) - distrust the pose.
+// plane in undistorted normalized coordinates: H = s [r1 r2 t] with K = I
+// after Brown-Conrady + skew inversion, orthonormalized - the standard
+// planar P4P. Reprojection RMS (pixels, through the full distort+K model)
+// reports the fit; large values mean the quad is not the screen (wrong
+// pairing, bent contour, or class-size aspect mismatch) - distrust the pose.
+// Refuses planes facing away from the camera or seen at grazing incidence.
 bool SolveQuadPose(
     const Quad& quad,
     const Intrinsics& intrinsics,

@@ -214,38 +214,64 @@ bool IsConvex(const std::vector<Point2>& polygon) {
     return sign != 0.0;
 }
 
-// Order 4 unordered quad vertices as TL, TR, BR, BL (y down): TL has the
-// smallest x+y, BR the largest; of the other two, TR has the largest x-y.
+// Order 4 unordered quad vertices as TL, TR, BR, BL (y down) by polar
+// angle around the centroid: robust under head roll and strong
+// perspective, where the x+y / x-y sums mislabel corners. The start index
+// is rotated to the smallest x+y (image TL) and the winding is kept
+// clockwise (positive signed area with y down).
 bool OrderCorners(std::array<Point2, 4>* points) {
     if (points == nullptr) {
         return false;
     }
     std::array<Point2, 4>& p = *points;
+    double centroidX = 0.0;
+    double centroidY = 0.0;
+    for (const Point2& point : p) {
+        centroidX += point.x;
+        centroidY += point.y;
+    }
+    centroidX *= 0.25;
+    centroidY *= 0.25;
+    std::array<double, 4> angles{};
+    for (size_t index = 0; index < 4U; ++index) {
+        angles[index] = std::atan2(
+            static_cast<double>(p[index].y) - centroidY,
+            static_cast<double>(p[index].x) - centroidX);
+    }
+    std::array<size_t, 4> order = {0U, 1U, 2U, 3U};
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        return angles[a] < angles[b];
+    });
+    std::array<Point2, 4> sorted = {
+        p[order[0]], p[order[1]], p[order[2]], p[order[3]]};
+    // With y down, ascending atan2 order is TL, TR, BR, BL when the
+    // quad is upright; rotate so the smallest x+y (image TL) is first.
     size_t topLeft = 0;
-    size_t bottomRight = 0;
     for (size_t index = 1; index < 4U; ++index) {
-        if (p[index].x + p[index].y < p[topLeft].x + p[topLeft].y) {
+        if (sorted[index].x + sorted[index].y <
+            sorted[topLeft].x + sorted[topLeft].y) {
             topLeft = index;
         }
-        if (p[index].x + p[index].y > p[bottomRight].x + p[bottomRight].y) {
-            bottomRight = index;
-        }
     }
-    size_t rest[2] = {0U, 0U};
-    size_t cursor = 0;
+    std::array<Point2, 4> rotated{};
     for (size_t index = 0; index < 4U; ++index) {
-        if (index != topLeft && index != bottomRight) {
-            rest[cursor++] = index;
-        }
+        rotated[index] = sorted[(topLeft + index) % 4U];
     }
-    const size_t topRight =
-        (p[rest[0]].x - p[rest[0]].y) > (p[rest[1]].x - p[rest[1]].y)
-            ? rest[0]
-            : rest[1];
-    const size_t bottomLeft = topRight == rest[0] ? rest[1] : rest[0];
-    const std::array<Point2, 4> ordered = {
-        p[topLeft], p[topRight], p[bottomRight], p[bottomLeft]};
-    p = ordered;
+    // Keep TL, TR, BR, BL (clockwise with y down, positive signed area).
+    double twice = 0.0;
+    for (size_t index = 0; index < 4U; ++index) {
+        const Point2& a = rotated[index];
+        const Point2& b = rotated[(index + 1U) % 4U];
+        twice += static_cast<double>(a.x) * b.y -
+                 static_cast<double>(b.x) * a.y;
+    }
+    if (twice < 0.0) {
+        // Counter-clockwise: keep TL first, reverse the other three.
+        const std::array<Point2, 4> fixed = {
+            rotated[0], rotated[3], rotated[2], rotated[1]};
+        rotated = fixed;
+    }
+    p = rotated;
     return true;
 }
 
@@ -504,6 +530,96 @@ Vector3 Normalize(const Vector3& value) {
     return {value.x / norm, value.y / norm, value.z / norm};
 }
 
+// Forward Brown-Conrady distortion on normalized coordinates, matching
+// libs/detection_projection::DistortNormalized (k1, k2, k3, p1, p2).
+void DistortNormalized(
+    const Intrinsics& intrinsics, double x, double y,
+    double* distortedX, double* distortedY) {
+    const double radius2 = x * x + y * y;
+    const double radius4 = radius2 * radius2;
+    const double radius6 = radius4 * radius2;
+    const double radial =
+        1.0 + static_cast<double>(intrinsics.distortion[0]) * radius2 +
+        static_cast<double>(intrinsics.distortion[1]) * radius4 +
+        static_cast<double>(intrinsics.distortion[2]) * radius6;
+    const double p1 = static_cast<double>(intrinsics.distortion[3]);
+    const double p2 = static_cast<double>(intrinsics.distortion[4]);
+    *distortedX = x * radial + 2.0 * p1 * x * y + p2 * (radius2 + 2.0 * x * x);
+    *distortedY = y * radial + p1 * (radius2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+}
+
+// Invert the forward model for one distorted pixel (including skew) to
+// undistorted normalized coordinates, mirroring UnprojectPixel's Newton
+// solve in libs/detection_projection.
+bool UndistortToNormalized(
+    const Intrinsics& intrinsics,
+    double pixelX,
+    double pixelY,
+    double* normalX,
+    double* normalY) {
+    const double distortedY =
+        (pixelY - static_cast<double>(intrinsics.cy)) /
+        static_cast<double>(intrinsics.fy);
+    const double distortedX =
+        (pixelX - static_cast<double>(intrinsics.cx) -
+         static_cast<double>(intrinsics.skew) * distortedY) /
+        static_cast<double>(intrinsics.fx);
+    double x = distortedX;
+    double y = distortedY;
+    constexpr int kIterations = 12;
+    constexpr double kTolerance = 1.0e-7;
+    constexpr double kStep = 1.0e-4;
+    for (int iteration = 0; iteration < kIterations; ++iteration) {
+        double predictedX = 0.0;
+        double predictedY = 0.0;
+        DistortNormalized(intrinsics, x, y, &predictedX, &predictedY);
+        const double errorX = predictedX - distortedX;
+        const double errorY = predictedY - distortedY;
+        if (std::max(std::abs(errorX), std::abs(errorY)) <= kTolerance) {
+            break;
+        }
+        double xStepX = 0.0;
+        double xStepY = 0.0;
+        double yStepX = 0.0;
+        double yStepY = 0.0;
+        DistortNormalized(intrinsics, x + kStep, y, &xStepX, &xStepY);
+        DistortNormalized(intrinsics, x, y + kStep, &yStepX, &yStepY);
+        const double j00 = (xStepX - predictedX) / kStep;
+        const double j10 = (xStepY - predictedY) / kStep;
+        const double j01 = (yStepX - predictedX) / kStep;
+        const double j11 = (yStepY - predictedY) / kStep;
+        const double determinant = j00 * j11 - j01 * j10;
+        if (!std::isfinite(determinant) ||
+            std::abs(determinant) < 1.0e-9) {
+            return false;
+        }
+        x -= (j11 * errorX - j01 * errorY) / determinant;
+        y -= (-j10 * errorX + j00 * errorY) / determinant;
+        if (!std::isfinite(x) || !std::isfinite(y)) {
+            return false;
+        }
+    }
+    *normalX = x;
+    *normalY = y;
+    return std::isfinite(x) && std::isfinite(y);
+}
+
+void ProjectNormalizedToPixel(
+    const Intrinsics& intrinsics,
+    double normalX,
+    double normalY,
+    double* pixelX,
+    double* pixelY) {
+    double distortedX = 0.0;
+    double distortedY = 0.0;
+    DistortNormalized(intrinsics, normalX, normalY, &distortedX, &distortedY);
+    *pixelX = static_cast<double>(intrinsics.fx) * distortedX +
+              static_cast<double>(intrinsics.skew) * distortedY +
+              static_cast<double>(intrinsics.cx);
+    *pixelY = static_cast<double>(intrinsics.fy) * distortedY +
+              static_cast<double>(intrinsics.cy);
+}
+
 }  // namespace
 
 bool FindScreenQuadFromMask(
@@ -572,8 +688,22 @@ bool FindScreenQuadFromMask(
         boundsHeight < kMinimumQuadPixels) {
         return fail("mask quad below minimum size");
     }
-    const double aspect =
-        static_cast<double>(boundsWidth) / boundsHeight;
+    // A screen clipped by the frame edge still yields a clean convex quad
+    // whose pose is wrong but looks valid: refuse quads touching the border.
+    constexpr float kBorderMarginPixels = 3.0F;
+    if (minimumX <= kBorderMarginPixels || minimumY <= kBorderMarginPixels ||
+        maximumX >= static_cast<float>(width) - 1.0F - kBorderMarginPixels ||
+        maximumY >= static_cast<float>(height) - 1.0F - kBorderMarginPixels) {
+        return fail("mask quad touches the image border");
+    }
+    // Gate on the longer/shorter edge ratio so portrait displays (tablets,
+    // doors, frames) pass the same window as landscape ones; the old
+    // width/height gate rejected any rolled or portrait screen.
+    const double longer =
+        static_cast<double>(std::max(boundsWidth, boundsHeight));
+    const double shorter =
+        static_cast<double>(std::max(1, std::min(boundsWidth, boundsHeight)));
+    const double aspect = longer / shorter;
     if (aspect < kMinimumAspect || aspect > kMaximumAspect) {
         return fail("mask quad outside display aspect window");
     }
@@ -623,29 +753,37 @@ bool SolveQuadPose(
         {halfWidth, -halfHeight},
         {-halfWidth, -halfHeight},
     };
+    for (const float coefficient : intrinsics.distortion) {
+        if (!std::isfinite(coefficient)) {
+            return fail("non-finite distortion");
+        }
+    }
+    if (!std::isfinite(intrinsics.skew)) {
+        return fail("non-finite skew");
+    }
+    // Undistort first: the PnP homography is solved in normalized
+    // coordinates (K = I) so it shares the Brown-Conrady + skew model with
+    // the box-ray UnprojectPixel path instead of a pinhole approximation.
+    Point2 normalized[4];
+    for (int index = 0; index < 4; ++index) {
+        double normalX = 0.0;
+        double normalY = 0.0;
+        if (!UndistortToNormalized(
+                intrinsics, quad.corners[index].x, quad.corners[index].y,
+                &normalX, &normalY)) {
+            return fail("corner undistortion failed");
+        }
+        normalized[index] = {
+            static_cast<float>(normalX), static_cast<float>(normalY)};
+    }
     double homography[9];
-    if (!SolveHomography(object, quad.corners.data(), homography, error)) {
+    if (!SolveHomography(object, normalized, homography, error)) {
         return false;
     }
-    // A = K^-1 H maps the object plane (X, Y, 0) to normalized camera
-    // coordinates: A = s [r1 r2 t].
-    const double inverseFx = 1.0 / intrinsics.fx;
-    const double inverseFy = 1.0 / intrinsics.fy;
-    const double row0[3] = {
-        (homography[0] - intrinsics.cx * homography[6]) * inverseFx,
-        (homography[1] - intrinsics.cx * homography[7]) * inverseFx,
-        (homography[2] - intrinsics.cx * homography[8]) * inverseFx,
-    };
-    const double row1[3] = {
-        (homography[3] - intrinsics.cy * homography[6]) * inverseFy,
-        (homography[4] - intrinsics.cy * homography[7]) * inverseFy,
-        (homography[5] - intrinsics.cy * homography[8]) * inverseFy,
-    };
-    const double row2[3] = {
-        homography[6], homography[7], homography[8]};
-    const Vector3 first = {row0[0], row1[0], row2[0]};
-    const Vector3 second = {row0[1], row1[1], row2[1]};
-    const Vector3 third = {row0[2], row1[2], row2[2]};
+    // With K = I the homography is directly s [r1 r2 t].
+    const Vector3 first = {homography[0], homography[3], homography[6]};
+    const Vector3 second = {homography[1], homography[4], homography[7]};
+    const Vector3 third = {homography[2], homography[5], homography[8]};
     const double firstNorm = Norm(first);
     const double secondNorm = Norm(second);
     if (firstNorm < 1e-12 || secondNorm < 1e-12) {
@@ -664,19 +802,45 @@ bool SolveQuadPose(
         axisY = {-axisY.x, -axisY.y, -axisY.z};
         translation = {-translation.x, -translation.y, -translation.z};
     }
-    // Gram-Schmidt orthonormalization for noisy corners.
+    // Symmetric orthonormalization: Gram-Schmidt kept X exact and dumped
+    // all error into Y. Re-derive X from the corrected Y/Z so both image
+    // axes share the residual.
     axisX = Normalize(axisX);
     const double projection = Dot(axisX, axisY);
     axisY = Normalize(
         {axisY.x - projection * axisX.x, axisY.y - projection * axisX.y,
          axisY.z - projection * axisX.z});
-    const Vector3 axisZ = Cross(axisX, axisY);
+    if (Norm(axisY) < 1e-12) {
+        return fail("homography is degenerate");
+    }
+    Vector3 axisZ = Normalize(Cross(axisX, axisY));
+    axisX = Cross(axisY, axisZ);
     const double rotation[3][3] = {
         {axisX.x, axisY.x, axisZ.x},
         {axisX.y, axisY.y, axisZ.y},
         {axisX.z, axisY.z, axisZ.z},
     };
-    // Reprojection RMS of the 4 corners.
+    // The plane normal (object +Z in camera) must face the camera and not
+    // be grazing: a flipped or edge-on solution fits the same 4 pixels.
+    {
+        const double range = Norm(translation);
+        const double facing = Dot(axisZ, translation);
+        if (!(range > 1e-9)) {
+            return fail("translation is degenerate");
+        }
+        if (!(facing < 0.0)) {
+            return fail("plane normal faces away from the camera");
+        }
+        constexpr double kGrazingCosine = 0.0872;  // cos(85 deg)
+        if (-facing / range < kGrazingCosine) {
+            return fail("plane is at grazing incidence");
+        }
+    }
+    // Reprojection RMS through the full distort+K model. The corner pairing
+    // stays image TL-first (no rotation search): with 4 points every cyclic
+    // rotation fits exactly, so a best-reproj search cannot tell upright
+    // from upside-down and flips near-exact poses 180 deg. Roll beyond ~45
+    // deg remains open work (gravity-primed start or IMU).
     double squared = 0.0;
     for (int index = 0; index < 4; ++index) {
         const Vector3 camera = {
@@ -690,10 +854,11 @@ bool SolveQuadPose(
         if (!(camera.z > 1e-6)) {
             return fail("corner projects behind the camera");
         }
-        const double imageX =
-            intrinsics.fx * camera.x / camera.z + intrinsics.cx;
-        const double imageY =
-            intrinsics.fy * camera.y / camera.z + intrinsics.cy;
+        double imageX = 0.0;
+        double imageY = 0.0;
+        ProjectNormalizedToPixel(
+            intrinsics, camera.x / camera.z, camera.y / camera.z, &imageX,
+            &imageY);
         const double deltaX = imageX - quad.corners[index].x;
         const double deltaY = imageY - quad.corners[index].y;
         squared += deltaX * deltaX + deltaY * deltaY;
@@ -702,37 +867,47 @@ bool SolveQuadPose(
         *reprojectionErrorPixels =
             static_cast<float>(std::sqrt(squared / 4.0));
     }
-    // Quaternion (x, y, z, w) from the rotation matrix trace, as in the
-    // host implementation.
+    // Quaternion (x, y, z, w) via Shepperd's method: branch on the
+    // largest of trace, R00, R11, R22. The screen convention sits at
+    // trace = -1 (w ~= 0 nominal, not an edge case), so the old
+    // trace-or-fallback lost all signs near 180 deg and mirrored yaw.
     const double trace =
         rotation[0][0] + rotation[1][1] + rotation[2][2];
-    double quaternionW = std::sqrt(std::max(0.0, 1.0 + trace)) * 0.5;
     double quaternionX = 0.0;
     double quaternionY = 0.0;
     double quaternionZ = 0.0;
-    if (quaternionW > 1e-6) {
-        quaternionX =
-            (rotation[2][1] - rotation[1][2]) / (4.0 * quaternionW);
-        quaternionY =
-            (rotation[0][2] - rotation[2][0]) / (4.0 * quaternionW);
-        quaternionZ =
-            (rotation[1][0] - rotation[0][1]) / (4.0 * quaternionW);
+    double quaternionW = 0.0;
+    if (trace > 0.0) {
+        const double s = std::sqrt(trace + 1.0) * 2.0;
+        quaternionW = 0.25 * s;
+        quaternionX = (rotation[2][1] - rotation[1][2]) / s;
+        quaternionY = (rotation[0][2] - rotation[2][0]) / s;
+        quaternionZ = (rotation[1][0] - rotation[0][1]) / s;
+    } else if (
+        rotation[0][0] > rotation[1][1] && rotation[0][0] > rotation[2][2]) {
+        const double s =
+            std::sqrt(1.0 + rotation[0][0] - rotation[1][1] - rotation[2][2]) *
+            2.0;
+        quaternionW = (rotation[2][1] - rotation[1][2]) / s;
+        quaternionX = 0.25 * s;
+        quaternionY = (rotation[0][1] + rotation[1][0]) / s;
+        quaternionZ = (rotation[0][2] + rotation[2][0]) / s;
+    } else if (rotation[1][1] > rotation[2][2]) {
+        const double s =
+            std::sqrt(1.0 + rotation[1][1] - rotation[0][0] - rotation[2][2]) *
+            2.0;
+        quaternionW = (rotation[0][2] - rotation[2][0]) / s;
+        quaternionX = (rotation[0][1] + rotation[1][0]) / s;
+        quaternionY = 0.25 * s;
+        quaternionZ = (rotation[1][2] + rotation[2][1]) / s;
     } else {
-        quaternionX = std::sqrt(
-                          std::max(
-                              0.0, 1.0 + rotation[0][0] - rotation[1][1] -
-                                       rotation[2][2])) *
-                      0.5;
-        quaternionY = std::sqrt(
-                          std::max(
-                              0.0, 1.0 - rotation[0][0] + rotation[1][1] -
-                                       rotation[2][2])) *
-                      0.5;
-        quaternionZ = std::sqrt(
-                          std::max(
-                              0.0, 1.0 - rotation[0][0] - rotation[1][1] +
-                                       rotation[2][2])) *
-                      0.5;
+        const double s =
+            std::sqrt(1.0 + rotation[2][2] - rotation[0][0] - rotation[1][1]) *
+            2.0;
+        quaternionW = (rotation[1][0] - rotation[0][1]) / s;
+        quaternionX = (rotation[0][2] + rotation[2][0]) / s;
+        quaternionY = (rotation[1][2] + rotation[2][1]) / s;
+        quaternionZ = 0.25 * s;
     }
     const double norm = std::sqrt(
         quaternionX * quaternionX + quaternionY * quaternionY +

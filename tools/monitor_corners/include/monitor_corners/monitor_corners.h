@@ -32,6 +32,11 @@ struct Intrinsics {
     float fy = 0.0F;
     float cx = 0.0F;
     float cy = 0.0F;
+    // Skew (pixels) and Brown-Conrady k1, k2, k3, p1, p2. Zero keeps the
+    // pinhole model; SolveQuadPose undistorts before solvePnP so host and
+    // device share one camera model.
+    float skew = 0.0F;
+    std::array<float, 5> distortion{};
 };
 
 struct Pose {

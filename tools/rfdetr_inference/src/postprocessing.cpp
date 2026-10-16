@@ -202,10 +202,12 @@ bool PostprocessDetectionsWithMasks(
             return false;
         }
         if (contract.hasMasks) {
-            // Nearest-neighbour upsample of this query's mask grid to
-            // source pixels; a logit above threshold keeps the pixel.
-            // Same convention as rf-detr-cpp-inference's
-            // resize_threshold_mask at threshold 0.0 on raw logits.
+            // Half-pixel-centred nearest-neighbour upsample of this query's
+            // mask grid to source pixels; a logit above threshold keeps the
+            // pixel. Same convention as rf-detr-cpp-inference's
+            // resize_threshold_mask at threshold 0.0 on raw logits, mapped
+            // through pixel centres (u = (g + 0.5) * W/gw - 0.5) so the old
+            // floor map's systematic half-cell shift is gone.
             const int64_t gridH = contract.maskHeight;
             const int64_t gridW = contract.maskWidth;
             const size_t gridStep =
@@ -218,11 +220,21 @@ bool PostprocessDetectionsWithMasks(
                 static_cast<size_t>(sourceWidth) *
                 static_cast<size_t>(sourceHeight));
             for (int32_t y = 0; y < sourceHeight; ++y) {
-                const int64_t gridY =
-                    static_cast<int64_t>(y) * gridH / sourceHeight;
+                const int64_t gridY = std::clamp(
+                    static_cast<int64_t>(std::lround(
+                        (static_cast<double>(y) + 0.5) *
+                            static_cast<double>(gridH) /
+                            static_cast<double>(sourceHeight) -
+                        0.5)),
+                    int64_t{0}, gridH - 1);
                 for (int32_t x = 0; x < sourceWidth; ++x) {
-                    const int64_t gridX =
-                        static_cast<int64_t>(x) * gridW / sourceWidth;
+                    const int64_t gridX = std::clamp(
+                        static_cast<int64_t>(std::lround(
+                            (static_cast<double>(x) + 0.5) *
+                                static_cast<double>(gridW) /
+                                static_cast<double>(sourceWidth) -
+                            0.5)),
+                        int64_t{0}, gridW - 1);
                     const float logit = maskLogits
                         [gridBase +
                          static_cast<size_t>(gridY) *
