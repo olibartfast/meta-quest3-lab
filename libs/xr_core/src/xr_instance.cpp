@@ -25,6 +25,13 @@ bool HasExtension(
         });
 }
 
+// Ratified in OpenXR SDK 1.1.65, after this project's pinned loader headers.
+// Probe by name so the check keeps working once the loader is upgraded.
+constexpr const char* kSpatialContainerExtension =
+    "XR_EXT_spatial_container";
+constexpr const char* kSpatialContainerSelfRenderingExtension =
+    "XR_EXT_spatial_container_self_rendering";
+
 }  // namespace
 
 XrInstanceContext::~XrInstanceContext() {
@@ -85,6 +92,15 @@ bool XrInstanceContext::Initialize(
     for (const XrExtensionProperties& extension : extensions) {
         LogInfo("Extension: %s v%u", extension.extensionName, extension.extensionVersion);
     }
+
+    const bool hasSpatialContainer =
+        HasExtension(extensions, kSpatialContainerExtension);
+    const bool hasSpatialContainerSelfRendering =
+        HasExtension(extensions, kSpatialContainerSelfRenderingExtension);
+    LogInfo(
+        "Spatial container support: %s, self-rendering: %s",
+        hasSpatialContainer ? "available" : "unavailable",
+        hasSpatialContainerSelfRendering ? "available" : "unavailable");
 
     constexpr const char* kRequiredExtensions[] = {
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,

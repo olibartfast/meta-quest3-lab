@@ -36,7 +36,11 @@ Exit from the headset system UI or force a test shutdown with:
 adb shell am force-stop com.olibartfast.questlab.openxrbootstrap
 ```
 
-Successful logs include runtime and system information, extension enumeration, Vulkan device creation, a `READY` transition followed by `FOCUSED`, session begin, `LOCAL` space creation, and reverse-order destruction.
+Successful logs include runtime and system information, extension enumeration, a
+`Spatial container support: ...` line reporting whether `XR_EXT_spatial_container`
+and `XR_EXT_spatial_container_self_rendering` are advertised, Vulkan device
+creation, a `READY` transition followed by `FOCUSED`, session begin, `LOCAL` space
+creation, and reverse-order destruction.
 
 For device acceptance, perform three launch/exit cycles and verify each process terminates without OpenXR/Vulkan errors or leaked-handle warnings. Then build and launch the legacy regression target:
 
